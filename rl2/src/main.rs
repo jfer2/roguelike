@@ -6,18 +6,91 @@ use tcod::console::*;
 // actual size of the window
 const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
+const MAP_WIDTH: i32 = 80;
+const MAP_HEIGHT: i32 = 45;
+
+const COLOR_DARK_WALL: Color = Color { r: 0, g: 0, b: 100 };
+const COLOR_DARK_GROUND: Color = Color {
+    r: 50,
+    g: 50,
+    b: 150,
+};
+
+#[derive(Clone, Copy, Debug)]
+struct Tile {
+    blocked: bool,
+    block_sight: bool,
+}
+
+impl Tile {
+    pub fn empty() -> Self {
+        Tile {
+            blocked: false,
+            block_sight: false,
+        }
+    }
+
+    pub fn wall() -> Self {
+        Tile {
+            blocked: true,
+            block_sight: true,
+        }
+    }
+}
+
+type Map = Vec<Vec<Tile>>;
+
+struct Game {
+    map: Map,
+}
+
+fn make_map() -> Map {
+    let mut map = vec![vec![Tile::empty(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
+    map[30][22] = Tile::wall();
+    map[50][22] = Tile::wall();
+    map
+}
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
 struct Object {
     x: i32,
-    y, i32,
+    y: i32,
     char: char,
     color: Color,
 }
 
+fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
+    //draw all objects
+    for object in objects {
+        object.draw(&mut tcod.con);
+    }
+    // go through all tiles, and set their background color
+    for y in 0..MAP_HEIGHT {
+        for x in 0..MAP_WIDTH {
+            let wall = game.map[x as usize][y as usize].block_sight;
+            if wall {
+                tcod.con
+                    .set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
+            } else {
+                tcod.con
+                    .set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
+            }
+        }
+    }
+    blit(
+        &tcod.con,
+        (0, 0),
+        (MAP_WIDTH, MAP_HEIGHT),
+        &mut tcod.root,
+        (0, 0),
+        1.0,
+        1.0,
+    );
+}
+
 impl Object {
-    pub fn new(x: i32, y: i32, char: char, color: Color) - Self {
+    pub fn new(x: i32, y: i32, char: char, color: Color) -> Self {
         Object{x, y, char, color }
     }
     pub fn move_by(&mut self, dx: i32, dy: i32) {
@@ -75,7 +148,11 @@ fn main() {
         .title("Rust/libtcod tutorial")
         .init();
 
-    let con = Offscreen::new(SCREEN_WIDTH, SCREEN_HEIGHT);
+    let game = Game {
+        map: make_map(),
+    };
+
+    let con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
     let mut tcod = Tcod { root, con };
 
     // create object representing the player
@@ -88,29 +165,13 @@ fn main() {
     let mut objects = [player, npc];
 
     while !tcod.root.window_closed() {
-        /*
-        tcod.root.set_default_foreground(WHITE);
-        tcod.root.clear();
-        tcod.root
-            .put_char(player_x, player_y, '@', BackgroundFlag::None);
-        tcod.root.flush();
-        */
-        tcod.con.set_default_foreground(RED);
         tcod.con.clear();
-        tcod.con.put_char(player_x, player_y, '@', BackgroundFlag::None);
-        blit(
-            &tcod.con,
-            (0, 0),
-            (SCREEN_WIDTH, SCREEN_HEIGHT),
-            &mut tcod.root,
-            (0, 0),
-            1.0,
-            1.0,
-        );
+        render_all(&mut tcod, &game, &objects);
         tcod.root.flush();
 
         // handle keys and exit game if needed
-        let exit = handle_keys(&mut tcod, &mut player_x, &mut player_y);
+        let player = &mut objects[0];
+        let exit = handle_keys(&mut tcod, player);
         if exit {
             break;
         }
