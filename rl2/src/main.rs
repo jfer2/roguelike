@@ -20,6 +20,7 @@ const COLOR_DARK_GROUND: Color = Color {
 struct Tile {
     blocked: bool,
     block_sight: bool,
+    teleport: bool,
 }
 
 impl Tile {
@@ -27,13 +28,21 @@ impl Tile {
         Tile {
             blocked: false,
             block_sight: false,
+            teleport: false,
         }
     }
-
     pub fn wall() -> Self {
         Tile {
             blocked: true,
             block_sight: true,
+            teleport: false,
+        }
+    }
+    pub fn teleport() -> Self {
+        Tile {
+            blocked: false,
+            block_sight: false,
+            teleport: true,
         }
     }
 }
@@ -53,12 +62,6 @@ fn make_map() -> Map {
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
-struct Object {
-    x: i32,
-    y: i32,
-    char: char,
-    color: Color,
-}
 
 fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
     //draw all objects
@@ -89,15 +92,23 @@ fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
     );
 }
 
+struct Object {
+    x: i32,
+    y: i32,
+    char: char,
+    color: Color,
+}
+
 impl Object {
     pub fn new(x: i32, y: i32, char: char, color: Color) -> Self {
-        Object{x, y, char, color }
+        Object{ x, y, char, color }
     }
-    pub fn move_by(&mut self, dx: i32, dy: i32) {
-        self.x += dx;
-        self.y += dy;
+    pub fn move_by(&mut self, dx: i32, dy: i32, game: &Game) {
+        if !game.map[(self.x + dx) as usize][(self.y + dy) as usize].blocked {
+            self.x += dx;
+            self.y += dy;
+        }
     }
-
     pub fn draw(&self, con: &mut dyn Console) {
         con.set_default_foreground(self.color);
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
@@ -109,7 +120,7 @@ struct Tcod {
     con: Offscreen,
 }
 
-fn handle_keys(tcod: &mut Tcod, player: &mut Object) -> bool {
+fn handle_keys(tcod: &mut Tcod, game: &Game, player: &mut Object) -> bool {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
 
@@ -127,10 +138,10 @@ fn handle_keys(tcod: &mut Tcod, player: &mut Object) -> bool {
         Key { code: Escape, .. } => return true, // exit game
 
         // movement keys
-        Key { code: Up, .. } => player.move_by(0, -1),
-        Key { code: Down, .. } => player.move_by(0, 1),
-        Key { code: Left, .. } => player.move_by(-1, 0),
-        Key { code: Right, .. } => player.move_by(1, 0),
+        Key { code: Up, .. } => player.move_by(0, -1, game),
+        Key { code: Down, .. } => player.move_by(0, 1, game),
+        Key { code: Left, .. } => player.move_by(-1, 0, game),
+        Key { code: Right, .. } => player.move_by(1, 0, game),
 
         _ => {}
     }
@@ -171,7 +182,7 @@ fn main() {
 
         // handle keys and exit game if needed
         let player = &mut objects[0];
-        let exit = handle_keys(&mut tcod, player);
+        let exit = handle_keys(&mut tcod, &game, player);
         if exit {
             break;
         }
