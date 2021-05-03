@@ -8,6 +8,7 @@ const SCREEN_WIDTH: i32 = 80;
 const SCREEN_HEIGHT: i32 = 50;
 const MAP_WIDTH: i32 = 80;
 const MAP_HEIGHT: i32 = 45;
+const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
 const COLOR_DARK_WALL: Color = Color { r: 0, g: 0, b: 100 };
 const COLOR_DARK_GROUND: Color = Color {
@@ -47,6 +48,47 @@ impl Tile {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Rect {
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+}
+
+impl Rect {
+    pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Rect {
+            x1: x,
+            y1: y,
+            x2: x + w,
+            y2: y + h,
+        }
+    }
+}
+
+fn create_room(room: Rect, map: &mut Map) {
+    for x in (room.x1 + 1)..room.x2 {
+        for y in (room.y1 + 1)..room.y2 {
+            map[x as usize][y as usize] = Tile::empty();
+        }
+    }
+}
+
+fn create_h_tunnel(x1: i32, x2: i32, y: i32, map: &mut Map) {
+    use std::cmp;
+    for x in cmp::min(x1, x2)..(cmp::max(x1, x2) + 1) {
+        map[x as usize][y as usize] = Tile::empty();
+    }
+}
+
+fn create_v_tunnel(y1: i32, y2: i32, x: i32, map: &mut Map) {
+    use std::cmp;
+    for y in cmp::min(y1, y2)..(cmp::max(y1, y2) + 1) {
+        map[x as usize][y as usize] = Tile::empty();
+    }
+}
+
 type Map = Vec<Vec<Tile>>;
 
 struct Game {
@@ -54,14 +96,15 @@ struct Game {
 }
 
 fn make_map() -> Map {
-    let mut map = vec![vec![Tile::empty(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
-    map[30][22] = Tile::wall();
-    map[50][22] = Tile::wall();
+    let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
+    let room1 = Rect::new(20, 15, 10, 15);
+    let room2 = Rect::new(50, 15, 10, 15);
+    create_h_tunnel(3, 72, 23, &mut map);
+    create_room(room1, &mut map);
+    create_room(room2, &mut map);
+
     map
 }
-
-const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
-
 
 fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
     //draw all objects
@@ -167,7 +210,7 @@ fn main() {
     let mut tcod = Tcod { root, con };
 
     // create object representing the player
-    let player = Object::new(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, '@', WHITE);
+    let player = Object::new(25, 23, '@', WHITE);
 
     // create an NPC
     let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', YELLOW);
@@ -183,6 +226,7 @@ fn main() {
         // handle keys and exit game if needed
         let player = &mut objects[0];
         let exit = handle_keys(&mut tcod, &game, player);
+        println!("iteration");
         if exit {
             break;
         }
