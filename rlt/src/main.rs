@@ -19,20 +19,35 @@ impl Tile {
             walkable: true,
         }
     }
+    fn wall() -> Self {
+        Tile {
+            ascii: '#',
+            walkable: false,
+        }
+    }
 }
 
 
 type Map = Vec<Vec<Tile>>;
 
 fn make_map() -> Map {
-    let mut map: Map = vec![vec![Tile::empty(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
+    let mut map: Vec<Vec<Tile>> =  Vec::new();
+
+    for _ in 0..=MAP_HEIGHT {
+        map.push(Vec::new());
+    }
+    for x in 0..=MAP_HEIGHT {
+        for _ in 0..=MAP_WIDTH {
+            map[x as usize].push(Tile::empty());
+        }
+    }
     map
 }
 
 fn render(game: Game) {
-    for y in 0..MAP_HEIGHT {
-        for x in 0..MAP_WIDTH {
-            let curr_tile = game.map[x as usize][y as usize];
+    for y in 0..=MAP_HEIGHT {
+        for x in 0..=MAP_WIDTH {
+            let curr_tile = game.map[y as usize][x as usize];
             print!("{}", curr_tile.ascii);
         }
         println!("");
@@ -41,9 +56,12 @@ fn render(game: Game) {
 
 
 fn main() {
-    let game = Game {
+    let mut game = Game {
         map: make_map(),
     };
+    game.map[0][0] = Tile::wall();
+    game.map[1][1] = Tile::wall();
+    game.map[2][2] = Tile::wall();
     render(game);
 
 }
