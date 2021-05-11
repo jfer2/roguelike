@@ -1,3 +1,6 @@
+extern crate ncurses;
+use ncurses::*;
+use std::io::{self, Read};
 
 const MAP_WIDTH: i32 = 140;
 const MAP_HEIGHT: i32 = 40;
@@ -37,8 +40,12 @@ fn make_map() -> Map {
         map.push(Vec::new());
     }
     for x in 0..=MAP_HEIGHT {
-        for _ in 0..=MAP_WIDTH {
-            map[x as usize].push(Tile::empty());
+        for y in 0..=MAP_WIDTH {
+            if x == 0 || y == 0 || x == MAP_HEIGHT || y == MAP_WIDTH {
+                map[x as usize].push(Tile::wall());
+            } else {
+                map[x as usize].push(Tile::empty());
+            }
         }
     }
     map
@@ -56,12 +63,37 @@ fn render(game: Game) {
 
 
 fn main() {
+    /*
     let mut game = Game {
         map: make_map(),
     };
-    game.map[0][0] = Tile::wall();
-    game.map[1][1] = Tile::wall();
-    game.map[2][2] = Tile::wall();
     render(game);
+    */
+
+    /* Print to the back buffer. */
+
+
+    let mut v: Vec<i32> = Vec::new();
+    let mut count = 0;
+        initscr();
+    while count < 5 {
+        /* Update the screen. */
+        refresh();
+        println!("hellllloooooo,world!!!"); 
+
+        /* Wait for a key press. */
+        let p = getch();
+        refresh();
+        v.push(p);
+        count += 1;
+        
+        /* Terminate ncurses. */
+    }
+        endwin();
+    println!("{:?}", v);
+
+
+
+    
 
 }
