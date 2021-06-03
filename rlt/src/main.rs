@@ -54,6 +54,48 @@ impl Tile {
     }
 }
 
+/// A room on the map marked by x and y coordinates
+///
+///
+/// 
+#[derive(Clone, Copy, Debug)]
+struct Room {
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+}
+
+
+/// Room Example:
+///
+///     |-- width--| (x2,y2)
+///     ------------ ---
+///     |          |  |
+///     |          | height
+///     |          |  |
+///     |__________| _|_
+/// (x1,y1)    
+///
+impl Room {
+    pub fn new(x: i32, y: i32, width:i32, height: i32) -> Self {
+        Room {
+            x1: x,
+            y1: y,
+            x2: x + width,
+            y2: y + height,
+        }
+    }
+}
+
+fn create_room(room: Room, map: &mut Map) {
+    for x in (room.x1 + 1)..room.x2 {
+        for y in (room.y1 + 1)..room.y2 {
+            map[x as usize][y as usize] = Tile::empty();
+        }
+    }
+}
+
 /// This is a generic object: the player, a monster, an item, the stairs...
 /// It's always represented by a character on screen.
 #[derive(Debug)]
@@ -86,9 +128,9 @@ impl Object {
 
 fn make_map() -> Map {
     // fill map with "unblocked" tiles
-    let mut map = vec![vec![Tile::empty(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
+    let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
-    // create walls around parameter
+    // create walled parameter in game map
     for tile in 0..MAP_WIDTH {
         map[tile as usize][0 as usize] = Tile::wall();
         map[tile as usize][(MAP_HEIGHT - 1) as usize] = Tile::wall();
@@ -97,11 +139,10 @@ fn make_map() -> Map {
         map[0 as usize][tile as usize] = Tile::wall();
         map[(MAP_WIDTH - 1) as usize][tile as usize] = Tile::wall();
     }
-
-
-    // place two pillars to test the map
-    map[30][22] = Tile::wall();
-    map[50][22] = Tile::wall();
+    let room1 = Room::new(20, 15, 10, 15);
+    let room2 = Room::new(50, 15, 10, 15);
+    create_room(room1, &mut map);
+    create_room(room2, &mut map);
 
     map
 }
