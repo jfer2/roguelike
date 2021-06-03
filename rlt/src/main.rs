@@ -4,20 +4,20 @@ use tcod::colors::*;
 use tcod::console::*;
 
 // actual size of the window
-const SCREEN_WIDTH: i32 = 80;
-const SCREEN_HEIGHT: i32 = 50;
+const SCREEN_WIDTH: i32 = 120;
+const SCREEN_HEIGHT: i32 = 80;
 
 // size of the map
-const MAP_WIDTH: i32 = 80;
-const MAP_HEIGHT: i32 = 45;
+const MAP_WIDTH: i32 = 120;
+const MAP_HEIGHT: i32 = 60;
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
-const COLOR_DARK_WALL: Color = Color { r: 0, g: 0, b: 100 };
+const COLOR_DARK_WALL: Color = Color { r: 50, g: 80, b: 80 };
 const COLOR_DARK_GROUND: Color = Color {
-    r: 50,
-    g: 50,
-    b: 150,
+    r: 40,
+    g: 120,
+    b: 70,
 };
 
 struct Tcod {
@@ -88,7 +88,16 @@ fn make_map() -> Map {
     // fill map with "unblocked" tiles
     let mut map = vec![vec![Tile::empty(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
-    // create walls around paramater
+    // create walls around parameter
+    for tile in 0..MAP_WIDTH {
+        map[tile as usize][0 as usize] = Tile::wall();
+        map[tile as usize][(MAP_HEIGHT - 1) as usize] = Tile::wall();
+    }
+    for tile in 0..MAP_HEIGHT {
+        map[0 as usize][tile as usize] = Tile::wall();
+        map[(MAP_WIDTH - 1) as usize][tile as usize] = Tile::wall();
+    }
+
 
     // place two pillars to test the map
     map[30][22] = Tile::wall();
