@@ -8,7 +8,6 @@ use std::cmp;
 // actual size of the window
 const SCREEN_WIDTH: i32 = 120;
 const SCREEN_HEIGHT: i32 = 80;
-
 // size of the map
 const MAP_WIDTH: i32 = 120;
 const MAP_HEIGHT: i32 = 60;
@@ -240,11 +239,15 @@ fn make_map(player: &mut Object) -> Map {
         }
     }
     // Get a random room to place the main player in 
-    let random_room_number = rand::thread_rng().gen_range(0, rooms.len());
-    let center: (i32, i32) = rooms[random_room_number].center();
+    let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
+    let mut center: (i32, i32) = rooms[random_room_number].center();
     player.x = center.0;
     player.y = center.1;
-    map[(player.x + 1) as usize][(player.y + 1) as usize] = Tile::teleport();
+
+    // Get a random room to place a teleport tile in
+    let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
+    center = rooms[random_room_number].center();
+    map[center.0 as usize][center.1 as usize] = Tile::teleport();
 
     map
 }
@@ -321,19 +324,35 @@ fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
     );
 }
 
-fn check_teleport(game: &Game, player: &mut Object) {
+fn check_teleport(map: &mut Map, player: &mut Object) {
     // Check if player is on a teleport tile
-    if game.map[player.x as usize][player.y as usize].teleport == true {
+    if map[player.x as usize][player.y as usize].teleport == true {
+        let prev = (player.x, player.y);
         // Randomly selects a tiles, checks if its suitable to teleport to and changes
         // player's current location to that tile when found
         loop {
             let x = rand::thread_rng().gen_range(1, MAP_WIDTH - 1);
             let y = rand::thread_rng().gen_range(1, MAP_HEIGHT - 1);
-            if game.map[x as usize][y as usize].is_teleportable_to() {
+            if map[x as usize][y as usize].is_teleportable_to() {
                 player.x = x;
                 player.y = y;
+                map[prev.0 as usize][prev.1 as usize].teleport = false;
                 break;
             }
+        }
+        place_rand_teleport_tile(map, player);
+    }
+}
+
+fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
+    println!("{} {}", player.x, player.y);
+    
+    loop {
+        let x = rand::thread_rng().gen_range(1, MAP_WIDTH - 1);
+        let y = rand::thread_rng().gen_range(1, MAP_HEIGHT - 1);
+        if map[x as usize][y as usize].is_teleportable_to() {
+            map[x as usize][y as usize].teleport = true;
+            break;
         }
     }
 }
@@ -390,7 +409,7 @@ fn main() {
     // the list of objects with those two
     let mut objects = [player, npc];
 
-    let game = Game {
+    let mut game = Game {
         // generate map (at this point it's not drawn to the screen)
         map: make_map(&mut objects[0]),
     };
@@ -410,7 +429,7 @@ fn main() {
         if exit {
             break;
         }
-        check_teleport(&game, player);
+        check_teleport(&mut game.map, player);
     }
 }
 
