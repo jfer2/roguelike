@@ -87,6 +87,9 @@ impl Tile {
             false
         }
     }
+    pub fn is_empty(&self) -> bool {
+        !self.blocked
+    }
 }
 
 /// A room on the map marked by x and y coordinates
@@ -344,14 +347,36 @@ fn check_teleport(map: &mut Map, player: &mut Object) {
     }
 }
 
-fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
-    println!("{} {}", player.x, player.y);
-    
+fn get_tile_non_passage_blocking(map: &Map) -> (i32, i32) {
+
+    // Get random (x,y) coord for a tile
+    let mut x: i32 = rand::thread_rng().gen_range(3, MAP_WIDTH - 3);
+    let mut y: i32 = rand::thread_rng().gen_range(3, MAP_HEIGHT - 3);
+
+    // Check if random gen (x,y) is blocking a passage
     loop {
-        let x = rand::thread_rng().gen_range(1, MAP_WIDTH - 1);
-        let y = rand::thread_rng().gen_range(1, MAP_HEIGHT - 1);
-        if map[x as usize][y as usize].is_teleportable_to() {
-            map[x as usize][y as usize].teleport = true;
+        if map[(x + 1) as usize][y as usize].is_empty() &
+            map[(x - 1) as usize][y as usize].is_empty() &
+            map[x as usize][(y + 1) as usize].is_empty() &
+            map[x as usize][(y - 1) as usize].is_empty() &
+            map[(x + 1) as usize][(y + 1) as usize].is_empty() &
+            map[(x + 1) as usize][(y - 1) as usize].is_empty() &
+            map[(x - 1) as usize][(y + 1) as usize].is_empty() &
+            map[(x - 1) as usize][(y - 1) as usize].is_empty() {
+                break;
+        } else {
+            x = rand::thread_rng().gen_range(3, MAP_WIDTH - 3);
+            y = rand::thread_rng().gen_range(3, MAP_HEIGHT - 3);
+        }
+    }
+    (x, y)
+}
+
+fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
+    loop {
+        let tile: (i32, i32) = get_tile_non_passage_blocking(map);
+        if map[tile.0 as usize][tile.1 as usize].is_teleportable_to() {
+            map[tile.0 as usize][tile.1 as usize].teleport = true;
             break;
         }
     }
