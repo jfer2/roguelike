@@ -20,6 +20,7 @@ const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
 const COLOR_DARK_WALL: Color = Color { r: 15, g: 15, b: 15 };
 const COLOR_PERIMETER: Color = Color { r: 100, g: 100, b: 100 };
+const COLOR_TELEPORT: Color = Color {r: 0, g: 0, b: 225};
 const COLOR_DARK_GROUND: Color = Color {
     r: 40,
     g: 120,
@@ -43,7 +44,7 @@ struct Tile {
     blocked: bool,
     block_sight: bool,
     perimeter: bool,
-    tele: bool,
+    teleport: bool,
 }
 
 impl Tile {
@@ -52,7 +53,7 @@ impl Tile {
             blocked: false,
             block_sight: false,
             perimeter: false,
-            tele: false,
+            teleport: false,
         }
     }
 
@@ -61,7 +62,7 @@ impl Tile {
             blocked: true,
             block_sight: true,
             perimeter: false,
-            tele: false,
+            teleport: false,
         }
     }
     pub fn perimeter() -> Self {
@@ -69,7 +70,22 @@ impl Tile {
             blocked: true,
             block_sight: true,
             perimeter: true,
-            tele: false,
+            teleport: false,
+        }
+    }
+    pub fn teleport() -> Self {
+        Tile {
+            blocked: false,
+            block_sight: false,
+            perimeter: false,
+            teleport: true,
+        }
+    }
+    pub fn is_teleportable_to(&self) -> bool {
+        if self.blocked == false && self.teleport == false {
+            true
+        } else {
+            false
         }
     }
 }
@@ -89,14 +105,15 @@ struct Room {
 
 /// Room Example:
 ///
-///     |-- width--| (x2,y2)
+/// (x1,y1)
+///     |-- width--|
 ///     ------------ ---
 ///     |          |  |
 ///     |          | height
 ///     |          |  |
 ///     |__________| _|_
-/// (x1,y1)    
-///
+///               (x2,y2)
+///               
 impl Room {
     pub fn new(x: i32, y: i32, width:i32, height: i32) -> Self {
         Room {
@@ -227,6 +244,7 @@ fn make_map(player: &mut Object) -> Map {
     let center: (i32, i32) = rooms[random_room_number].center();
     player.x = center.0;
     player.y = center.1;
+    map[(player.x + 1) as usize][(player.y + 1) as usize] = Tile::teleport();
 
     map
 }
@@ -266,6 +284,7 @@ fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
 
             let wall = game.map[x as usize][y as usize].block_sight;
             let perimeter = game.map[x as usize][y as usize].perimeter;
+            let teleport = game.map[x as usize][y as usize].teleport;
 
             if perimeter {
                 tcod.con
@@ -274,7 +293,11 @@ fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
             else if wall {
                 tcod.con
                     .set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
-            } else {
+            } else if teleport {
+                tcod.con
+                    .set_char_background(x, y, COLOR_TELEPORT, BackgroundFlag::Set);
+            }
+            else {
                 tcod.con
                     .set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
             }
@@ -296,6 +319,23 @@ fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
         1.0,
         1.0,
     );
+}
+
+fn check_teleport(game: &Game, player: &mut Object) {
+    // Check if player is on a teleport tile
+    if game.map[player.x as usize][player.y as usize].teleport == true {
+        // Randomly selects a tiles, checks if its suitable to teleport to and changes
+        // player's current location to that tile when found
+        loop {
+            let x = rand::thread_rng().gen_range(1, MAP_WIDTH - 1);
+            let y = rand::thread_rng().gen_range(1, MAP_HEIGHT - 1);
+            if game.map[x as usize][y as usize].is_teleportable_to() {
+                player.x = x;
+                player.y = y;
+                break;
+            }
+        }
+    }
 }
 
 fn handle_keys(tcod: &mut Tcod, game: &Game, player: &mut Object) -> bool {
@@ -370,6 +410,7 @@ fn main() {
         if exit {
             break;
         }
+        check_teleport(&game, player);
     }
 }
 
