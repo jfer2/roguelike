@@ -2,6 +2,8 @@
 // See the Contributing section in README on how to make changes to it.
 use tcod::colors::*;
 use tcod::console::*;
+use rand::Rng;
+use std::cmp;
 
 // actual size of the window
 const SCREEN_WIDTH: i32 = 120;
@@ -10,10 +12,14 @@ const SCREEN_HEIGHT: i32 = 80;
 // size of the map
 const MAP_WIDTH: i32 = 120;
 const MAP_HEIGHT: i32 = 60;
+const ROOM_MAX_SIZE: i32 = 10;
+const ROOM_MIN_SIZE: i32 = 6;
+const MAX_ROOMS: i32 = 30;
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
-const COLOR_DARK_WALL: Color = Color { r: 50, g: 80, b: 80 };
+const COLOR_DARK_WALL: Color = Color { r: 15, g: 15, b: 15 };
+const COLOR_PERIMETER: Color = Color { r: 100, g: 100, b: 100 };
 const COLOR_DARK_GROUND: Color = Color {
     r: 40,
     g: 120,
@@ -36,6 +42,8 @@ struct Game {
 struct Tile {
     blocked: bool,
     block_sight: bool,
+    perimeter: bool,
+    tele: bool,
 }
 
 impl Tile {
@@ -43,6 +51,8 @@ impl Tile {
         Tile {
             blocked: false,
             block_sight: false,
+            perimeter: false,
+            tele: false,
         }
     }
 
@@ -50,6 +60,16 @@ impl Tile {
         Tile {
             blocked: true,
             block_sight: true,
+            perimeter: false,
+            tele: false,
+        }
+    }
+    pub fn perimeter() -> Self {
+        Tile {
+            blocked: true,
+            block_sight: true,
+            perimeter: true,
+            tele: false,
         }
     }
 }
@@ -85,6 +105,19 @@ impl Room {
             x2: x + width,
             y2: y + height,
         }
+    }
+    pub fn center(&self) -> (i32, i32) {
+        let center_x = (self.x1 + self.x2) / 2;
+        let center_y = (self.y1 + self.y2) / 2;
+        (center_x, center_y)
+    }
+
+
+    pub fn room_overlaps(&self, r: &Room) -> bool {
+        (self.x1 <= r.x2)
+            && (self.x2 >= r.x1)
+            && (self.y1 <= r.y2)
+            && (self.y2 >= r.y1)
     }
 }
 
@@ -126,33 +159,119 @@ impl Object {
     }
 }
 
-fn make_map() -> Map {
+fn make_map(player: &mut Object) -> Map {
     // fill map with "unblocked" tiles
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
-    // create walled parameter in game map
+    // create walled perimeter in game map
     for tile in 0..MAP_WIDTH {
-        map[tile as usize][0 as usize] = Tile::wall();
-        map[tile as usize][(MAP_HEIGHT - 1) as usize] = Tile::wall();
+        map[tile as usize][0 as usize] = Tile::perimeter();
+        map[tile as usize][(MAP_HEIGHT - 1) as usize] = Tile::perimeter();
     }
     for tile in 0..MAP_HEIGHT {
-        map[0 as usize][tile as usize] = Tile::wall();
-        map[(MAP_WIDTH - 1) as usize][tile as usize] = Tile::wall();
+        map[0 as usize][tile as usize] = Tile::perimeter();
+        map[(MAP_WIDTH - 1) as usize][tile as usize] = Tile::perimeter();
     }
+
+    /* Testing for room functionality
     let room1 = Room::new(20, 15, 10, 15);
     let room2 = Room::new(50, 15, 10, 15);
+    let room3 = Room::new(115, 55, 5, 5);
     create_room(room1, &mut map);
     create_room(room2, &mut map);
+    create_room(room3, &mut map);
+    create_horizontal_passage(25, 55, 23, &mut map);
+    */
+
+    let mut rooms = vec![];
+
+    for _ in 0..MAX_ROOMS {
+        // random width and height
+        let w = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
+        let h = rand::thread_rng().gen_range(ROOM_MIN_SIZE, ROOM_MAX_SIZE + 1);
+        // random position without going out of the boundaries of the map
+        let x = rand::thread_rng().gen_range(0, MAP_WIDTH - w);
+        let y = rand::thread_rng().gen_range(0, MAP_HEIGHT - h);
+        let new_room = Room::new(x, y, w, h);
+
+        let overlap = rooms
+            .iter()
+            .any(|other_room| new_room.room_overlaps(other_room));
+
+
+        if !overlap {
+            create_room(new_room, &mut map);
+            let (new_x, new_y) = new_room.center();
+            if !rooms.is_empty() {
+                // all rooms after the first:
+                // connect it to the previous room with a tunnel
+                // center coordinates of the previous room
+                let (prev_x, prev_y) = rooms[rooms.len() - 1].center();
+
+                // toss a coin (random bool value -- either true or false)
+                if rand::random() {
+                    // first move horizontally, then vertically
+                    create_horizontal_passage(prev_x, new_x, prev_y, &mut map);
+                    create_vertical_passage(prev_y, new_y, new_x, &mut map);
+                } else {
+                    // first move vertically, then horizontally
+                    create_vertical_passage(prev_y, new_y, prev_x, &mut map);
+                    create_horizontal_passage(prev_x, new_x, new_y, &mut map);
+                }
+            }
+            rooms.push(new_room);
+        }
+    }
+    // Get a random room to place the main player in 
+    let random_room_number = rand::thread_rng().gen_range(0, rooms.len());
+    let center: (i32, i32) = rooms[random_room_number].center();
+    player.x = center.0;
+    player.y = center.1;
 
     map
 }
+
+fn create_horizontal_passage(x1: i32, x2: i32, y: i32, map: &mut Map) {
+    let passage: (i32, i32) = {
+        if x1 <= x2 {
+            (x1, x2)
+        } else {
+            (x2, x1)
+        }
+    };
+
+    for x in passage.0..passage.1 + 1 {
+        map[x as usize][y as usize] = Tile:: empty();
+    }
+}
+
+fn create_vertical_passage(y1: i32, y2: i32, x: i32, map: &mut Map) {
+    let passage: (i32, i32) = {
+        if y1 <= y2 {
+            (y1, y2)
+        } else {
+            (y2, y1)
+        }
+    };
+    for y in passage.0..passage.1 + 1 {
+        map[x as usize][y as usize] = Tile:: empty();
+    }
+}
+
 
 fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
     // go through all tiles, and set their background color
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
+
             let wall = game.map[x as usize][y as usize].block_sight;
-            if wall {
+            let perimeter = game.map[x as usize][y as usize].perimeter;
+
+            if perimeter {
+                tcod.con
+                    .set_char_background(x, y, COLOR_PERIMETER, BackgroundFlag::Set);
+            }
+            else if wall {
                 tcod.con
                     .set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
             } else {
@@ -223,7 +342,7 @@ fn main() {
     let mut tcod = Tcod { root, con };
 
     // create object representing the player
-    let player = Object::new(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, '@', WHITE);
+    let player = Object::new(0, 0, '@', WHITE);
 
     // create an NPC
     let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', YELLOW);
@@ -233,7 +352,7 @@ fn main() {
 
     let game = Game {
         // generate map (at this point it's not drawn to the screen)
-        map: make_map(),
+        map: make_map(&mut objects[0]),
     };
 
     while !tcod.root.window_closed() {
