@@ -16,11 +16,13 @@ const SCREEN_HEIGHT: i32 = 80;
 // size of the map
 const MAP_WIDTH: i32 = 120;
 const MAP_HEIGHT: i32 = 60;
-const ROOM_MAX_SIZE: i32 = 15;
-const ROOM_MIN_SIZE: i32 = 6;
+const ROOM_MAX_SIZE: i32 = 20;
+const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = 30;
+const MAX_ROOM_MONSTERS = 2;
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
+const PLAYER: usize = 0;
 
 const COLOR_DARK_WALL: Color = Color {
     r: 120,
@@ -195,29 +197,69 @@ struct Object {
     y: i32,
     char: char,
     color: Color,
+    name: String,
+    blocks: bool,
+    alive: bool,
 }
 
 impl Object {
-    pub fn new(x: i32, y: i32, char: char, color: Color) -> Self {
-        Object { x, y, char, color }
-    }
-
-    /// move by the given amount, if the destination is not blocked
-    pub fn move_by(&mut self, dx: i32, dy: i32, game: &Game) {
-        if !game.map[(self.x + dx) as usize][(self.y + dy) as usize].blocked {
-            self.x += dx;
-            self.y += dy;
+    pub fn new(x: i32, y: i32, char: char, name: &str, color: Color, blocks: bool) -> Self {
+        Object { 
+            x: x,
+            y: y,
+            char: char,
+            color: color,
+            name: name.into(),
+            blocks: blocks,
+            alive: false,
         }
     }
+
 
     /// set the color and then draw the character that represents this object at its position
     pub fn draw(&self, con: &mut dyn Console) {
         con.set_default_foreground(self.color);
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
     }
+    
+    /// returns the current position of the object
+    pub fn pos(&self) -> (i32, i32) {
+        (self.x, self.y)
+    }
+
+    /// sets the position of an object
+    pub fn set_pos(&mut self, x: i32, y: i32) {
+        self.x = x;
+        self.y = y;
+    }
 }
 
-fn make_map(player: &mut Object) -> Map {
+fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
+    // checks if the tile is blocking
+    if map[x as usize][y as usize].blocked {
+        return true;
+    }
+
+    // checks if an object/item is blocking
+    let blocking: bool = false;
+
+    for object in object.iter()
+        if object.blocks && object.pos() == (x, y) {
+            blocking = true;
+            break;
+        }
+    blocking
+}
+
+/// move by the given amount, if the destination is not blocked
+pub fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
+    let (x, y) = objects[id].pos();
+    if !is_blocked(x + dx, y + dy, map, objects) {
+        objects[id].set_pos(x + dx, y + dy);
+    }
+}
+
+fn make_map(objects: &mut Vec<Object>) -> Map {
     // fill map with "unblocked" tiles
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
@@ -258,6 +300,7 @@ fn make_map(player: &mut Object) -> Map {
 
         if !overlap {
             create_room(new_room, &mut map);
+            place_objects(new_room, objects);
             let (new_x, new_y) = new_room.center();
             if !rooms.is_empty() {
                 // all rooms after the first:
@@ -279,11 +322,10 @@ fn make_map(player: &mut Object) -> Map {
             rooms.push(new_room);
         }
     }
-    // Get a random room to place the main player in
+    // Get a random room to place the player in
     let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
     let mut center: (i32, i32) = rooms[random_room_number].center();
-    player.x = center.0;
-    player.y = center.1;
+    objects[PLAYER].set_pos(center.0, center.1);
 
     // Get a random room to place a teleport tile in
     let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
@@ -323,7 +365,7 @@ fn create_vertical_passage(y1: i32, y2: i32, x: i32, map: &mut Map) {
 fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recompute: bool) {
     if fov_recompute {
         // recompute FOV if necessary
-        let player = &objects[0];
+        let player = &objects[PLAYER];
         tcod.fov
             .compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
     }
@@ -463,6 +505,24 @@ fn handle_keys(tcod: &mut Tcod, game: &Game, player: &mut Object) -> bool {
     false
 }
 
+fn place_object(room: Rect, object: &mut Vec<Object>) {
+    let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOM_MONSTERS + 1);
+
+    for _ in 0..num_monsters {
+        let x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
+        let y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+
+        let mut monster = if rand::random::<f32>() < 0.8 {
+            // create orc
+            Object::new(x, y, 'o', colors::DESATURATED_GREEN)
+        } else {
+            Object::new(x, y, 'T', colors::DARKER_GREEN)
+        };
+
+        objects.push(monster);
+    }
+}
+
 fn main() {
     tcod::system::set_fps(LIMIT_FPS);
 
@@ -484,15 +544,12 @@ fn main() {
     // create object representing the player
     let player = Object::new(0, 0, '@', WHITE);
 
-    // create an NPC
-    let npc = Object::new(SCREEN_WIDTH / 2 - 5, SCREEN_HEIGHT / 2, '@', YELLOW);
-
     // the list of objects with those two
     let mut objects = [player, npc];
 
     let mut game = Game {
         // generate map (at this point it's not drawn to the screen)
-        map: make_map(&mut objects[0]),
+        map: make_map(&mut objects),
     };
     
     // populate the FOV map, according to the generated map
@@ -514,13 +571,13 @@ fn main() {
         tcod.con.clear();
 
         // render the screen
-        let fov_recompute = previous_player_position != (objects[0].x, objects[0].y);
+        let fov_recompute = previous_player_position != (objects[PLAYER].x, objects[PLAYER].y);
         render_all(&mut tcod, &mut game, &objects, fov_recompute);
 
         tcod.root.flush();
 
         // handle keys and exit game if needed
-        let player = &mut objects[0];
+        let player = &mut objects[PLAYER];
 
         // get the current position of the player before a potential move in fn 'handle_keys'
         previous_player_position = (player.x, player.y);
