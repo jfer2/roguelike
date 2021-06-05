@@ -1,9 +1,14 @@
 // This file is generated automatically. Do not edit it directly.
 // See the Contributing section in README on how to make changes to it.
-use tcod::colors::*;
-use tcod::console::*;
 use rand::Rng;
 use std::cmp;
+use tcod::colors::*;
+use tcod::console::*;
+use tcod::map::{ FovAlgorithm, Map as FovMap };
+
+const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
+const FOV_LIGHT_WALLS: bool = true;
+const TORCH_RADIUS: i32 = 15;
 
 // actual size of the window
 const SCREEN_WIDTH: i32 = 120;
@@ -11,24 +16,58 @@ const SCREEN_HEIGHT: i32 = 80;
 // size of the map
 const MAP_WIDTH: i32 = 120;
 const MAP_HEIGHT: i32 = 60;
-const ROOM_MAX_SIZE: i32 = 10;
+const ROOM_MAX_SIZE: i32 = 15;
 const ROOM_MIN_SIZE: i32 = 6;
 const MAX_ROOMS: i32 = 30;
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 
-const COLOR_DARK_WALL: Color = Color { r: 15, g: 15, b: 15 };
-const COLOR_PERIMETER: Color = Color { r: 100, g: 100, b: 100 };
-const COLOR_TELEPORT: Color = Color {r: 0, g: 0, b: 225};
-const COLOR_DARK_GROUND: Color = Color {
-    r: 40,
+const COLOR_DARK_WALL: Color = Color {
+    r: 120,
     g: 120,
-    b: 70,
+    b: 120,
 };
+const COLOR_LIGHT_WALL: Color = Color {
+    r: 255,
+    g: 205,
+    b: 105,
+};
+const COLOR_LIGHT_PERIMETER: Color = Color {
+    r: 100,
+    g: 100,
+    b: 100,
+};
+const COLOR_DARK_PERIMETER: Color = Color {
+    r: 40,
+    g: 40,
+    b: 40,
+};
+const COLOR_DARK_GROUND: Color = Color {
+    r: 65,
+    g: 90,
+    b: 50,
+};
+const COLOR_LIGHT_GROUND: Color = Color {
+    r: 70,
+    g: 140,
+    b: 40,
+};
+const COLOR_LIGHT_TELEPORT: Color = Color { 
+    r: 0, 
+    g: 0, 
+    b: 225, 
+};
+const COLOR_DARK_TELEPORT: Color = Color {
+    r: 0, 
+    g: 0, 
+    b: 130, 
+};
+
 
 struct Tcod {
     root: Root,
     con: Offscreen,
+    fov: FovMap,
 }
 
 type Map = Vec<Vec<Tile>>;
@@ -44,6 +83,7 @@ struct Tile {
     block_sight: bool,
     perimeter: bool,
     teleport: bool,
+    explored: bool,
 }
 
 impl Tile {
@@ -53,6 +93,7 @@ impl Tile {
             block_sight: false,
             perimeter: false,
             teleport: false,
+            explored: false,
         }
     }
 
@@ -62,6 +103,7 @@ impl Tile {
             block_sight: true,
             perimeter: false,
             teleport: false,
+            explored: false,
         }
     }
     pub fn perimeter() -> Self {
@@ -70,6 +112,7 @@ impl Tile {
             block_sight: true,
             perimeter: true,
             teleport: false,
+            explored: false,
         }
     }
     pub fn teleport() -> Self {
@@ -78,6 +121,7 @@ impl Tile {
             block_sight: false,
             perimeter: false,
             teleport: true,
+            explored: false,
         }
     }
     pub fn is_teleportable_to(&self) -> bool {
@@ -95,7 +139,7 @@ impl Tile {
 /// A room on the map marked by x and y coordinates
 ///
 ///
-/// 
+///
 #[derive(Clone, Copy, Debug)]
 struct Room {
     x1: i32,
@@ -103,7 +147,6 @@ struct Room {
     x2: i32,
     y2: i32,
 }
-
 
 /// Room Example:
 ///
@@ -117,7 +160,7 @@ struct Room {
 ///               (x2,y2)
 ///               
 impl Room {
-    pub fn new(x: i32, y: i32, width:i32, height: i32) -> Self {
+    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
         Room {
             x1: x,
             y1: y,
@@ -131,12 +174,8 @@ impl Room {
         (center_x, center_y)
     }
 
-
     pub fn room_overlaps(&self, r: &Room) -> bool {
-        (self.x1 <= r.x2)
-            && (self.x2 >= r.x1)
-            && (self.y1 <= r.y2)
-            && (self.y2 >= r.y1)
+        (self.x1 <= r.x2) && (self.x2 >= r.x1) && (self.y1 <= r.y2) && (self.y2 >= r.y1)
     }
 }
 
@@ -217,7 +256,6 @@ fn make_map(player: &mut Object) -> Map {
             .iter()
             .any(|other_room| new_room.room_overlaps(other_room));
 
-
         if !overlap {
             create_room(new_room, &mut map);
             let (new_x, new_y) = new_room.center();
@@ -241,7 +279,7 @@ fn make_map(player: &mut Object) -> Map {
             rooms.push(new_room);
         }
     }
-    // Get a random room to place the main player in 
+    // Get a random room to place the main player in
     let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
     let mut center: (i32, i32) = rooms[random_room_number].center();
     player.x = center.0;
@@ -265,7 +303,7 @@ fn create_horizontal_passage(x1: i32, x2: i32, y: i32, map: &mut Map) {
     };
 
     for x in passage.0..passage.1 + 1 {
-        map[x as usize][y as usize] = Tile:: empty();
+        map[x as usize][y as usize] = Tile::empty();
     }
 }
 
@@ -278,41 +316,55 @@ fn create_vertical_passage(y1: i32, y2: i32, x: i32, map: &mut Map) {
         }
     };
     for y in passage.0..passage.1 + 1 {
-        map[x as usize][y as usize] = Tile:: empty();
+        map[x as usize][y as usize] = Tile::empty();
     }
 }
 
-
-fn render_all(tcod: &mut Tcod, game: &Game, objects: &[Object]) {
+fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recompute: bool) {
+    if fov_recompute {
+        // recompute FOV if necessary
+        let player = &objects[0];
+        tcod.fov
+            .compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
+    }
     // go through all tiles, and set their background color
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
-
+            let visible = tcod.fov.is_in_fov(x, y);
             let wall = game.map[x as usize][y as usize].block_sight;
             let perimeter = game.map[x as usize][y as usize].perimeter;
             let teleport = game.map[x as usize][y as usize].teleport;
 
-            if perimeter {
-                tcod.con
-                    .set_char_background(x, y, COLOR_PERIMETER, BackgroundFlag::Set);
+            let color = match (visible, wall, perimeter, teleport) {
+                // Outside player's FOV
+                (false, true, true, false) => COLOR_DARK_PERIMETER,
+                (false, true, false, false) => COLOR_DARK_WALL,
+                (false, false, false, true) => COLOR_DARK_TELEPORT,
+                (false, false, false, false) => COLOR_DARK_GROUND,
+                // Inside player's FOV
+                (true, true, true, false) => COLOR_LIGHT_PERIMETER,
+                (true, true, false, false) => COLOR_LIGHT_WALL,
+                (true, false, false, true) => COLOR_LIGHT_TELEPORT,
+                (true, false, false, false) => COLOR_DARK_GROUND,
+                _ => COLOR_DARK_PERIMETER,
+            };
+
+            let explored = &mut game.map[x as usize][y as usize].explored;
+            if visible {
+                *explored = true;
             }
-            else if wall {
+            if *explored {
                 tcod.con
-                    .set_char_background(x, y, COLOR_DARK_WALL, BackgroundFlag::Set);
-            } else if teleport {
-                tcod.con
-                    .set_char_background(x, y, COLOR_TELEPORT, BackgroundFlag::Set);
-            }
-            else {
-                tcod.con
-                    .set_char_background(x, y, COLOR_DARK_GROUND, BackgroundFlag::Set);
+                    .set_char_background(x, y, color, BackgroundFlag::Set);
             }
         }
     }
 
     // draw all objects in the list
     for object in objects {
-        object.draw(&mut tcod.con);
+        if tcod.fov.is_in_fov(object.x, object.y) {
+            object.draw(&mut tcod.con);
+        }
     }
 
     // blit the contents of "con" to the root console
@@ -348,22 +400,22 @@ fn check_teleport(map: &mut Map, player: &mut Object) {
 }
 
 fn get_tile_non_passage_blocking(map: &Map) -> (i32, i32) {
-
     // Get random (x,y) coord for a tile
     let mut x: i32 = rand::thread_rng().gen_range(3, MAP_WIDTH - 3);
     let mut y: i32 = rand::thread_rng().gen_range(3, MAP_HEIGHT - 3);
 
     // Check if random gen (x,y) is blocking a passage
     loop {
-        if map[(x + 1) as usize][y as usize].is_empty() &
-            map[(x - 1) as usize][y as usize].is_empty() &
-            map[x as usize][(y + 1) as usize].is_empty() &
-            map[x as usize][(y - 1) as usize].is_empty() &
-            map[(x + 1) as usize][(y + 1) as usize].is_empty() &
-            map[(x + 1) as usize][(y - 1) as usize].is_empty() &
-            map[(x - 1) as usize][(y + 1) as usize].is_empty() &
-            map[(x - 1) as usize][(y - 1) as usize].is_empty() {
-                break;
+        if map[(x + 1) as usize][y as usize].is_empty()
+            & map[(x - 1) as usize][y as usize].is_empty()
+            & map[x as usize][(y + 1) as usize].is_empty()
+            & map[x as usize][(y - 1) as usize].is_empty()
+            & map[(x + 1) as usize][(y + 1) as usize].is_empty()
+            & map[(x + 1) as usize][(y - 1) as usize].is_empty()
+            & map[(x - 1) as usize][(y + 1) as usize].is_empty()
+            & map[(x - 1) as usize][(y - 1) as usize].is_empty()
+        {
+            break;
         } else {
             x = rand::thread_rng().gen_range(3, MAP_WIDTH - 3);
             y = rand::thread_rng().gen_range(3, MAP_HEIGHT - 3);
@@ -423,7 +475,11 @@ fn main() {
 
     let con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
 
-    let mut tcod = Tcod { root, con };
+    let mut tcod = Tcod { 
+        root, 
+        con: Offscreen::new(MAP_WIDTH, MAP_HEIGHT),
+        fov: FovMap::new(MAP_WIDTH, MAP_HEIGHT),
+    };
 
     // create object representing the player
     let player = Object::new(0, 0, '@', WHITE);
@@ -438,18 +494,37 @@ fn main() {
         // generate map (at this point it's not drawn to the screen)
         map: make_map(&mut objects[0]),
     };
+    
+    // populate the FOV map, according to the generated map
+    for y in 0..MAP_HEIGHT {
+        for x in 0..MAP_WIDTH {
+            tcod.fov.set(
+                x,
+                y,
+                !game.map[x as usize][y as usize].block_sight,
+                !game.map[x as usize][y as usize].blocked,
+            );
+        }
+    }
+
+    let mut previous_player_position = (-1, -1);
 
     while !tcod.root.window_closed() {
         // clear the screen of the previous frame
         tcod.con.clear();
 
         // render the screen
-        render_all(&mut tcod, &game, &objects);
+        let fov_recompute = previous_player_position != (objects[0].x, objects[0].y);
+        render_all(&mut tcod, &mut game, &objects, fov_recompute);
 
         tcod.root.flush();
 
         // handle keys and exit game if needed
         let player = &mut objects[0];
+
+        // get the current position of the player before a potential move in fn 'handle_keys'
+        previous_player_position = (player.x, player.y);
+
         let exit = handle_keys(&mut tcod, &game, player);
         if exit {
             break;
@@ -457,4 +532,3 @@ fn main() {
         check_teleport(&mut game.map, player);
     }
 }
-
