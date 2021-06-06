@@ -19,7 +19,7 @@ const MAP_HEIGHT: i32 = 60;
 const ROOM_MAX_SIZE: i32 = 20;
 const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = 30;
-const MAX_ROOM_MONSTERS = 2;
+const MAX_ROOM_MONSTERS: i32 = 2;
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 const PLAYER: usize = 0;
@@ -76,6 +76,13 @@ type Map = Vec<Vec<Tile>>;
 
 struct Game {
     map: Map,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PlayerAction {
+    TookTurn,
+    DidntTakeTurn,
+    Exit,
 }
 
 /// A tile of the map and its properties
@@ -241,18 +248,15 @@ fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
     }
 
     // checks if an object/item is blocking
-    let blocking: bool = false;
+    objects
+        .iter()
+        .any(|object| object.blocks && object.pos() == (x, y))
 
-    for object in object.iter()
-        if object.blocks && object.pos() == (x, y) {
-            blocking = true;
-            break;
-        }
-    blocking
+
 }
 
 /// move by the given amount, if the destination is not blocked
-pub fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
+fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
     let (x, y) = objects[id].pos();
     if !is_blocked(x + dx, y + dy, map, objects) {
         objects[id].set_pos(x + dx, y + dy);
@@ -300,7 +304,7 @@ fn make_map(objects: &mut Vec<Object>) -> Map {
 
         if !overlap {
             create_room(new_room, &mut map);
-            place_objects(new_room, objects);
+            place_objects(new_room, &map, objects);
             let (new_x, new_y) = new_room.center();
             if !rooms.is_empty() {
                 // all rooms after the first:
@@ -476,50 +480,92 @@ fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
     }
 }
 
-fn handle_keys(tcod: &mut Tcod, game: &Game, player: &mut Object) -> bool {
+fn handle_keys(tcod: &mut Tcod, game: &Game, objects: &mut Vec<Object>) -> PlayerAction {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
+    use PlayerAction::*;
 
     let key = tcod.root.wait_for_keypress(true);
-    match key {
-        Key {
-            code: Enter,
-            alt: true,
-            ..
-        } => {
+    let player_alive = objects[PLAYER].alive;
+    match (key, key.text(), player_alive) {
+        (
+            Key {
+                code: Enter,
+                alt: true,
+                ..
+            },
+            _,
+            _,
+        )=> {
             // Alt+Enter: toggle fullscreen
             let fullscreen = tcod.root.is_fullscreen();
             tcod.root.set_fullscreen(!fullscreen);
+            DidntTakeTurn
         }
-        Key { code: Escape, .. } => return true, // exit game
+        (Key { code: Escape, .. }, _, _) => Exit, // exit game
 
         // movement keys
-        Key { code: Up, .. } => player.move_by(0, -1, game),
-        Key { code: Down, .. } => player.move_by(0, 1, game),
-        Key { code: Left, .. } => player.move_by(-1, 0, game),
-        Key { code: Right, .. } => player.move_by(1, 0, game),
-
-        _ => {}
+        (Key { code: Up, .. }, _, true) => {
+            player_move_or_attack(0, -1, game, objects);
+            TookTurn
+        }
+        (Key { code: Down, .. }, _, true) => {
+            player_move_or_attack(0, 1, game, objects);
+            TookTurn
+        }
+        (Key { code: Left, .. }, _, true) => {
+            player_move_or_attack(-1, 0, game, objects);
+            TookTurn
+        }
+        (Key { code: Right, .. }, _, true) => {
+            player_move_or_attack(1, 0, game, objects);
+            TookTurn
+        }
+        _ => DidntTakeTurn
     }
-
-    false
 }
 
-fn place_object(room: Rect, object: &mut Vec<Object>) {
+fn player_move_or_attack(dx: i32, dy: i32, game: &Game, objects: &mut[Object]) {
+    // the corrdinates the palyer is moving to/attacking
+    let x = objects[PLAYER].x + dx;
+    let y = objects[PLAYER].y + dy;
+
+    // try to find an attackable object there
+    let target_id = objects.iter().position(|object| object.pos() == (x, y));
+
+    // attack if target is found, move otherwise
+    match target_id {
+        Some(target_id) => {
+            println!(
+                "The {} laughs at your puny efforts to attack him!",
+                objects[target_id].name
+            );
+        }
+        None => {
+            move_by(PLAYER, dx, dy, &game.map, objects);
+        }
+    }
+}
+
+
+fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
     let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOM_MONSTERS + 1);
 
     for _ in 0..num_monsters {
         let x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
         let y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
 
-        let mut monster = if rand::random::<f32>() < 0.8 {
-            // create orc
-            Object::new(x, y, 'o', colors::DESATURATED_GREEN)
-        } else {
-            Object::new(x, y, 'T', colors::DARKER_GREEN)
-        };
-
-        objects.push(monster);
+        if !is_blocked(x, y, map, objects) {
+            let mut monster = if rand::random::<f32>() < 0.8 {
+                // create orc
+                Object::new(x, y, 'o', "orc", DESATURATED_RED, true)
+            } else {
+                // create troll
+                Object::new(x, y, 'T', "troll", DARKER_RED, true)
+            };
+            monster.alive = true;
+            objects.push(monster);
+        }
     }
 }
 
@@ -533,8 +579,6 @@ fn main() {
         .title("Rust/libtcod tutorial")
         .init();
 
-    let con = Offscreen::new(MAP_WIDTH, MAP_HEIGHT);
-
     let mut tcod = Tcod { 
         root, 
         con: Offscreen::new(MAP_WIDTH, MAP_HEIGHT),
@@ -542,10 +586,11 @@ fn main() {
     };
 
     // create object representing the player
-    let player = Object::new(0, 0, '@', WHITE);
+    let mut player = Object::new(0, 0, '@', "player", WHITE, true);
+    player.alive = true;
 
     // the list of objects with those two
-    let mut objects = [player, npc];
+    let mut objects = vec![player];
 
     let mut game = Game {
         // generate map (at this point it's not drawn to the screen)
@@ -576,16 +621,22 @@ fn main() {
 
         tcod.root.flush();
 
-        // handle keys and exit game if needed
-        let player = &mut objects[PLAYER];
-
         // get the current position of the player before a potential move in fn 'handle_keys'
-        previous_player_position = (player.x, player.y);
-
-        let exit = handle_keys(&mut tcod, &game, player);
-        if exit {
+        previous_player_position = objects[PLAYER].pos();
+        let player_action = handle_keys(&mut tcod, &game, &mut objects);
+        if player_action == PlayerAction::Exit {
             break;
         }
-        check_teleport(&mut game.map, player);
+
+        // let monsters take their turn
+        if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
+            for object in &objects {
+                // only if object is not player
+                if (object as *const _) != (&objects[PLAYER] as *const _) {
+                    println!("The {} growls!", object.name);
+                }
+            }
+        }
+        check_teleport(&mut game.map, &mut objects[PLAYER]);
     }
 }
