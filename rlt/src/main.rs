@@ -21,6 +21,7 @@ const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = 30;
 const MAX_ROOM_MONSTERS: i32 = 2;
 const MAX_ROOM_ITEMS: i32 = 1;
+const CORPSE_CONSUME_HP: i32 = 2;
 
 const BAR_WIDTH: i32 = 20;
 const PANEL_HEIGHT: i32 = 7;
@@ -95,12 +96,14 @@ struct Tile {
     perimeter: bool,
     teleport: bool,
     explored: bool,
+    has_corpse: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     Heal,
 }
+
 
 fn pick_item_up(object_id: usize, game: &mut Game, objects: &mut Vec<Object>) {
     if game.inventory.len() >= 26 {
@@ -184,6 +187,8 @@ fn monster_death(monster: &mut Object, game: &mut Game) {
     monster.fighter = None;
     monster.ai = None;
     monster.name = format!("remains of {}", monster.name);
+    let corpse = monster.pos();
+    game.map[corpse.0 as usize][corpse.1 as usize].has_corpse = true;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,6 +204,7 @@ impl Tile {
             perimeter: false,
             teleport: false,
             explored: false,
+            has_corpse: false,
         }
     }
 
@@ -209,6 +215,7 @@ impl Tile {
             perimeter: false,
             teleport: false,
             explored: false,
+            has_corpse: false,
         }
     }
     pub fn perimeter() -> Self {
@@ -218,6 +225,7 @@ impl Tile {
             perimeter: true,
             teleport: false,
             explored: false,
+            has_corpse: false,
         }
     }
     pub fn teleport() -> Self {
@@ -227,6 +235,7 @@ impl Tile {
             perimeter: false,
             teleport: true,
             explored: false,
+            has_corpse: false,
         }
     }
     pub fn is_teleportable_to(&self) -> bool {
@@ -360,6 +369,23 @@ impl Object {
                 fighter.on_death.callback(self, game);
             }
         }
+    }
+    pub fn consume_corpse(&mut self, hp: i32, game: &mut Game) {
+        // increase hp if possible
+        if let Some(fighter) = self.fighter.as_mut() {
+            if fighter.hp + hp >= fighter.max_hp {
+                fighter.hp = fighter.max_hp;
+            } else {
+                fighter.hp += hp
+            }
+        }
+        game.messages.add(
+            format!(
+                "You consumed a corpse and gained {} HP", 
+                CORPSE_CONSUME_HP
+            ),
+            ORANGE,
+        );
     }
 
     pub fn attack(&mut self, target: &mut Object, game: &mut Game) {
@@ -724,17 +750,28 @@ fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> P
         }
         (Key { code: Shift, .. }, _, true) => {
             // pick up item
+            let position = objects[PLAYER].pos();
             let item_id = objects
                 .iter()
                 .position(|object| object.pos() == objects[PLAYER].pos() && object.item.is_some());
             if let Some(item_id) = item_id {
                 pick_item_up(item_id, game, objects);
             }
+            if game.map[position.0 as usize][position.1 as usize].has_corpse == true {
+                objects[PLAYER].consume_corpse(CORPSE_CONSUME_HP, game);
+                game.map[position.0 as usize][position.1 as usize].has_corpse = false;
+                for object in objects {
+                    if object.pos() == (position.0, position.1) {
+                        object.char = '_';
+                    }
+                }
+            }
             DidntTakeTurn
         }
         _ => DidntTakeTurn,
     }
 }
+
 
 fn player_move_or_attack(dx: i32, dy: i32, game: &mut Game, objects: &mut [Object]) {
     // the corrdinates the palyer is moving to/attacking
@@ -944,6 +981,12 @@ fn main() {
                 }
             }
         }
+        // ensures player is still a '@' after transforming corpse to a '_' object
+        if objects[PLAYER].alive == true {
+            objects[PLAYER].char = '@';
+        }
+
+        // Check to see if the player is on a teleport tile and teleports them if they are
         check_teleport(&mut game.map, &mut objects[PLAYER]);
     }
 }
