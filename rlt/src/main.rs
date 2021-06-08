@@ -4,7 +4,7 @@ use rand::Rng;
 use std::cmp;
 use tcod::colors::*;
 use tcod::console::*;
-use tcod::map::{ FovAlgorithm, Map as FovMap };
+use tcod::map::{FovAlgorithm, Map as FovMap};
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
@@ -54,17 +54,8 @@ const COLOR_LIGHT_GROUND: Color = Color {
     g: 140,
     b: 40,
 };
-const COLOR_LIGHT_TELEPORT: Color = Color { 
-    r: 0, 
-    g: 0, 
-    b: 225, 
-};
-const COLOR_DARK_TELEPORT: Color = Color {
-    r: 0, 
-    g: 0, 
-    b: 130, 
-};
-
+const COLOR_LIGHT_TELEPORT: Color = Color { r: 0, g: 0, b: 225 };
+const COLOR_DARK_TELEPORT: Color = Color { r: 0, g: 0, b: 130 };
 
 struct Tcod {
     root: Root,
@@ -93,6 +84,19 @@ struct Tile {
     perimeter: bool,
     teleport: bool,
     explored: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fighter {
+    max_hp: i32,
+    hp: i32,
+    defense: i32,
+    power: i32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Ai {
+    Basic,
 }
 
 impl Tile {
@@ -207,11 +211,13 @@ struct Object {
     name: String,
     blocks: bool,
     alive: bool,
+    fighter: Option<Fighter>,
+    ai: Option<Ai>,
 }
 
 impl Object {
     pub fn new(x: i32, y: i32, char: char, name: &str, color: Color, blocks: bool) -> Self {
-        Object { 
+        Object {
             x: x,
             y: y,
             char: char,
@@ -219,16 +225,17 @@ impl Object {
             name: name.into(),
             blocks: blocks,
             alive: false,
+            fighter: None,
+            ai: None,
         }
     }
-
 
     /// set the color and then draw the character that represents this object at its position
     pub fn draw(&self, con: &mut dyn Console) {
         con.set_default_foreground(self.color);
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
     }
-    
+
     /// returns the current position of the object
     pub fn pos(&self) -> (i32, i32) {
         (self.x, self.y)
@@ -239,6 +246,37 @@ impl Object {
         self.x = x;
         self.y = y;
     }
+    pub fn distance_to(&self, other: &Object) -> f32 {
+        let dx = other.x - self.x;
+        let dy = other.y - self.y;
+        ((dx.pow(2) + dy.pow(2)) as f32).sqrt()
+    }
+    pub fn take_damage(&mut self, damage: i32) {
+        // apply damage if possible
+        if let Some(fighter) = self.fighter.as_mut() {
+            if damage > 0 {
+                fighter.hp -= damage;
+            }
+        }
+    }
+    pub fn attack(&mut self, target: &mut Object) {
+        // a simple formula for attack damage
+        let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
+        if damage > 0 {
+            // make the target take damage
+            println!(
+                "{} attacks {} for {} hit HP.",
+                self.name, target.name, damage
+            );
+            target.take_damage(damage);
+        } else {
+            println!(
+                "{} attacks {} but it has no effect!",
+                self.name, target.name
+            );
+        }
+    }
+
 }
 
 fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
@@ -251,8 +289,20 @@ fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
     objects
         .iter()
         .any(|object| object.blocks && object.pos() == (x, y))
+}
 
+fn move_towards(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mut [Object]) {
+    // vector form this object to the target, and distance
+    let dx = target_x - objects[id].x;
+    let dy = target_y - objects[id].y;
+    let distance = ((dx.pow(2) + dy.pow(2)) as f32).sqrt();
 
+    // noramalize it to length 1, then round it and
+    // convert to integer so the movement is restricted to the map grid
+    //
+    let dx = (dx as f32 / distance).round() as i32;
+    let dy = (dy as f32 / distance).round() as i32;
+    move_by(id, dx, dy, map, objects);
 }
 
 /// move by the given amount, if the destination is not blocked
@@ -496,7 +546,7 @@ fn handle_keys(tcod: &mut Tcod, game: &Game, objects: &mut Vec<Object>) -> Playe
             },
             _,
             _,
-        )=> {
+        ) => {
             // Alt+Enter: toggle fullscreen
             let fullscreen = tcod.root.is_fullscreen();
             tcod.root.set_fullscreen(!fullscreen);
@@ -521,11 +571,11 @@ fn handle_keys(tcod: &mut Tcod, game: &Game, objects: &mut Vec<Object>) -> Playe
             player_move_or_attack(1, 0, game, objects);
             TookTurn
         }
-        _ => DidntTakeTurn
+        _ => DidntTakeTurn,
     }
 }
 
-fn player_move_or_attack(dx: i32, dy: i32, game: &Game, objects: &mut[Object]) {
+fn player_move_or_attack(dx: i32, dy: i32, game: &Game, objects: &mut [Object]) {
     // the corrdinates the palyer is moving to/attacking
     let x = objects[PLAYER].x + dx;
     let y = objects[PLAYER].y + dy;
@@ -547,7 +597,6 @@ fn player_move_or_attack(dx: i32, dy: i32, game: &Game, objects: &mut[Object]) {
     }
 }
 
-
 fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
     let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOM_MONSTERS + 1);
 
@@ -558,13 +607,47 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
         if !is_blocked(x, y, map, objects) {
             let mut monster = if rand::random::<f32>() < 0.8 {
                 // create orc
-                Object::new(x, y, 'o', "orc", DESATURATED_RED, true)
+                let mut orc = Object::new(x, y, 'o', "orc", DESATURATED_RED, true);
+                orc.fighter = Some(Fighter {
+                    max_hp: 10,
+                    hp: 10,
+                    defense: 0,
+                    power: 3,
+                });
+                orc.ai = Some(Ai::Basic);
+                orc
             } else {
                 // create troll
-                Object::new(x, y, 'T', "troll", DARKER_RED, true)
+                let mut troll = Object::new(x, y, 'T', "troll", DARKER_RED, true);
+                troll.fighter = Some(Fighter {
+                    max_hp: 16,
+                    hp: 16,
+                    defense: 1,
+                    power: 4,
+                });
+                troll.ai = Some(Ai::Basic);
+                troll
             };
             monster.alive = true;
             objects.push(monster);
+        }
+    }
+}
+
+fn ai_take_turn(monster_id: usize, tcod: &Tcod, game: &Game, objects: &mut [Object]) {
+    let (monster_x, monster_y) = objects[monster_id].pos();
+    if tcod.fov.is_in_fov(monster_x, monster_y) {
+        if objects[monster_id].distance_to(&objects[PLAYER]) >= 2.0 {
+            // move toward player if far away
+            let (player_x, player_y) = objects[PLAYER].pos();
+            move_towards(monster_id, player_x, player_y, &game.map, objects);
+        } else if objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
+            // close enough to attack
+            let monster = &objects[monster_id];
+            println!(
+                "The attack of the {} bounces off your metal armor!",
+                monster.name
+            );
         }
     }
 }
@@ -579,8 +662,8 @@ fn main() {
         .title("Rust/libtcod tutorial")
         .init();
 
-    let mut tcod = Tcod { 
-        root, 
+    let mut tcod = Tcod {
+        root,
         con: Offscreen::new(MAP_WIDTH, MAP_HEIGHT),
         fov: FovMap::new(MAP_WIDTH, MAP_HEIGHT),
     };
@@ -588,6 +671,12 @@ fn main() {
     // create object representing the player
     let mut player = Object::new(0, 0, '@', "player", WHITE, true);
     player.alive = true;
+    player.fighter = Some(Fighter {
+        max_hp: 30,
+        hp: 30,
+        defense: 2,
+        power: 5,
+    });
 
     // the list of objects with those two
     let mut objects = vec![player];
@@ -596,7 +685,7 @@ fn main() {
         // generate map (at this point it's not drawn to the screen)
         map: make_map(&mut objects),
     };
-    
+
     // populate the FOV map, according to the generated map
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
@@ -630,10 +719,9 @@ fn main() {
 
         // let monsters take their turn
         if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
-            for object in &objects {
-                // only if object is not player
-                if (object as *const _) != (&objects[PLAYER] as *const _) {
-                    println!("The {} growls!", object.name);
+            for id in 0..objects.len() {
+                if objects[id].ai.is_some() {
+                    ai_take_turn(id, &tcod, &game, &mut objects);
                 }
             }
         }
