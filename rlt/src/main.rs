@@ -14,12 +14,19 @@ const TORCH_RADIUS: i32 = 15;
 const SCREEN_WIDTH: i32 = 120;
 const SCREEN_HEIGHT: i32 = 80;
 // size of the map
-const MAP_WIDTH: i32 = 120;
-const MAP_HEIGHT: i32 = 60;
+const MAP_WIDTH: i32 = 80;
+const MAP_HEIGHT: i32 = 43;
 const ROOM_MAX_SIZE: i32 = 20;
 const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = 30;
 const MAX_ROOM_MONSTERS: i32 = 2;
+
+const BAR_WIDTH: i32 = 20;
+const PANEL_HEIGHT: i32 = 7;
+const PANEL_Y:i32 = SCREEN_HEIGHT - PANEL_HEIGHT;
+const MSG_X: i32 = BAR_WIDTH + 2;
+const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
+const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
 const PLAYER: usize = 0;
@@ -60,6 +67,7 @@ const COLOR_DARK_TELEPORT: Color = Color { r: 0, g: 0, b: 130 };
 struct Tcod {
     root: Root,
     con: Offscreen,
+    panel: Offscreen,
     fov: FovMap,
 }
 
@@ -67,6 +75,7 @@ type Map = Vec<Vec<Tile>>;
 
 struct Game {
     map: Map,
+    messages: Messages,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,6 +93,26 @@ struct Tile {
     perimeter: bool,
     teleport: bool,
     explored: bool,
+}
+
+struct Messages {
+    messages: Vec<(String, Color)>,
+}
+
+impl Messages {
+    pub fn new() -> Self {
+        Self{ messages: vec![] }
+    }
+
+    // add the new message (text, color)
+    pub fn add<T: Into<String>>(&mut self, message: T, color: Color) {
+        self.messages.push((message.into(), color));
+    }
+
+    // iterator over message
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &(String, Color)> {
+        self.messages.iter()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -132,7 +161,6 @@ fn monster_death(monster: &mut Object) {
     monster.ai = None;
     monster.name = format!("remains of {}", monster.name);
 }
-
 
 #[derive(Clone, Debug, PartialEq)]
 enum Ai {
@@ -308,7 +336,7 @@ impl Object {
         }
     }
 
-    pub fn attack(&mut self, target: &mut Object) {
+    pub fn attack(&mut self, target: &mut Object, game: &mut Game) {
         // a simple formula for attack damage
         let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
         if damage > 0 {
@@ -325,7 +353,6 @@ impl Object {
             );
         }
     }
-
 }
 
 /// Mutably borrow two separate elements from the given slice.
@@ -529,18 +556,6 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
         object.draw(&mut tcod.con);
     }
 
-    // show the player's stats
-    tcod.root.set_default_foreground(WHITE);
-    if let Some(fighter) = objects[PLAYER].fighter {
-        tcod.root.print_ex(
-            1,
-            SCREEN_HEIGHT - 2,
-            BackgroundFlag::None,
-            TextAlignment::Left,
-            format!("HP: {}/{}", fighter.hp, fighter.max_hp),
-        );
-    }
-
     // blit the contents of "con" to the root console
     blit(
         &tcod.con,
@@ -551,6 +566,29 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
         1.0,
         1.0,
     );
+    
+    tcod.panel.set_default_background(BLACK);
+    tcod.panel.clear();
+
+    // print the game messages
+    let mut y = MSG_HEIGHT as i32;
+    for &(ref msg, color) in game.messages.iter().rev() {
+        let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+        y -= msg_height;
+        if y < 0 {
+            break;
+        }
+        tcod.panel.set_default_foreground(color);
+        tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
+    }
+
+    // show player stats
+    let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
+    let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
+    render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, LIGHT_RED, DARKER_RED);
+
+    // blit the panel
+    blit(&tcod.panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), &mut tcod.root, (0, PANEL_Y), 1.0, 1.0);
 }
 
 fn check_teleport(map: &mut Map, player: &mut Object) {
@@ -608,7 +646,7 @@ fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
     }
 }
 
-fn handle_keys(tcod: &mut Tcod, game: &Game, objects: &mut Vec<Object>) -> PlayerAction {
+fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> PlayerAction {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
     use PlayerAction::*;
@@ -653,7 +691,7 @@ fn handle_keys(tcod: &mut Tcod, game: &Game, objects: &mut Vec<Object>) -> Playe
     }
 }
 
-fn player_move_or_attack(dx: i32, dy: i32, game: &Game, objects: &mut [Object]) {
+fn player_move_or_attack(dx: i32, dy: i32, game: &mut Game, objects: &mut [Object]) {
     // the corrdinates the palyer is moving to/attacking
     let x = objects[PLAYER].x + dx;
     let y = objects[PLAYER].y + dy;
@@ -666,10 +704,8 @@ fn player_move_or_attack(dx: i32, dy: i32, game: &Game, objects: &mut [Object]) 
     // attack if target is found, move otherwise
     match target_id {
         Some(target_id) => {
-            println!(
-                "The {} laughs at your puny efforts to attack him!",
-                objects[target_id].name
-            );
+            let (player, target) = mut_two(PLAYER, target_id, objects);
+            player.attack(target, game);
         }
         None => {
             move_by(PLAYER, dx, dy, &game.map, objects);
@@ -716,7 +752,41 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
     }
 }
 
-fn ai_take_turn(monster_id: usize, tcod: &Tcod, game: &Game, objects: &mut [Object]) {
+fn render_bar(
+    panel: &mut Offscreen,
+    x: i32,
+    y: i32,
+    total_width: i32,
+    name: &str,
+    value: i32,
+    maximum: i32,
+    bar_color: Color,
+    back_color: Color,
+) {
+    // calculate width of bar
+    let bar_width = (value as f32 / maximum as f32 * total_width as f32) as i32;
+
+    // render the background first
+    panel.set_default_background(back_color);
+    panel.rect(x, y, total_width, 1, false, BackgroundFlag::Screen);
+
+    // render the top of the bar
+    panel.set_default_background(bar_color);
+    if bar_width > 0 {
+        panel.rect(x, y, bar_width, 1, false, BackgroundFlag::Screen);
+    }
+
+    panel.set_default_foreground(WHITE);
+    panel.print_ex(
+        x + total_width / 2,
+        y,
+        BackgroundFlag::None,
+        TextAlignment::Center,
+        &format!("{}: {}/{}", name, value, maximum),
+    );
+}
+
+fn ai_take_turn(monster_id: usize, tcod: &Tcod, game: &mut Game, objects: &mut [Object]) {
     let (monster_x, monster_y) = objects[monster_id].pos();
     if tcod.fov.is_in_fov(monster_x, monster_y) {
         if objects[monster_id].distance_to(&objects[PLAYER]) >= 2.0 {
@@ -726,7 +796,7 @@ fn ai_take_turn(monster_id: usize, tcod: &Tcod, game: &Game, objects: &mut [Obje
         } else if objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
             // close enough to attack
             let (monster, player) = mut_two(monster_id, PLAYER, objects);
-            monster.attack(player);
+            monster.attack(player, game);
         }
     }
 }
@@ -744,6 +814,7 @@ fn main() {
     let mut tcod = Tcod {
         root,
         con: Offscreen::new(MAP_WIDTH, MAP_HEIGHT),
+        panel: Offscreen::new(SCREEN_WIDTH, PANEL_HEIGHT),
         fov: FovMap::new(MAP_WIDTH, MAP_HEIGHT),
     };
 
@@ -764,6 +835,7 @@ fn main() {
     let mut game = Game {
         // generate map (at this point it's not drawn to the screen)
         map: make_map(&mut objects),
+        messages: Messages::new(),
     };
 
     // populate the FOV map, according to the generated map
@@ -779,7 +851,9 @@ fn main() {
     }
 
     let mut previous_player_position = (-1, -1);
+    game.messages.add("Welcome stranger!", RED);
 
+    // game loop
     while !tcod.root.window_closed() {
         // clear the screen of the previous frame
         tcod.con.clear();
@@ -792,7 +866,7 @@ fn main() {
 
         // get the current position of the player before a potential move in fn 'handle_keys'
         previous_player_position = objects[PLAYER].pos();
-        let player_action = handle_keys(&mut tcod, &game, &mut objects);
+        let player_action = handle_keys(&mut tcod, &mut game, &mut objects);
         if player_action == PlayerAction::Exit {
             break;
         }
@@ -801,7 +875,7 @@ fn main() {
         if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
             for id in 0..objects.len() {
                 if objects[id].ai.is_some() {
-                    ai_take_turn(id, &tcod, &game, &mut objects);
+                    ai_take_turn(id, &tcod, &mut game, &mut objects);
                 }
             }
         }
