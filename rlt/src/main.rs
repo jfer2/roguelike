@@ -20,6 +20,7 @@ const ROOM_MAX_SIZE: i32 = 20;
 const ROOM_MIN_SIZE: i32 = 5;
 const MAX_ROOMS: i32 = 30;
 const MAX_ROOM_MONSTERS: i32 = 2;
+const MAX_ROOM_ITEMS: i32 = 1;
 
 const BAR_WIDTH: i32 = 20;
 const PANEL_HEIGHT: i32 = 7;
@@ -76,6 +77,7 @@ type Map = Vec<Vec<Tile>>;
 struct Game {
     map: Map,
     messages: Messages,
+    inventory: Vec<Object>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,6 +95,28 @@ struct Tile {
     perimeter: bool,
     teleport: bool,
     explored: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Item {
+    Heal,
+}
+
+fn pick_item_up(object_id: usize, game: &mut Game, objects: &mut Vec<Object>) {
+    if game.inventory.len() >= 26 {
+        game.messages.add(
+            format!(
+                "Your inventory is full, cannot pick up {}",
+                objects[object_id].name
+            ),
+            RED,
+        );
+    } else {
+        let item = objects.swap_remove(object_id);
+        game.messages
+            .add(format!("You picked up a {}!", item.name), GREEN);
+        game.inventory.push(item);
+    }
 }
 
 struct Messages {
@@ -131,29 +155,29 @@ enum DeathCallback {
 }
 
 impl DeathCallback {
-    fn callback(self, object: &mut Object) {
+    fn callback(self, object: &mut Object, game: &mut Game) {
         use DeathCallback::*;
-        let callback: fn(&mut Object) = match self {
+        let callback = match self {
             Player => player_death,
             Monster => monster_death,
         };
-        callback(object);
+        callback(object, game);
     }
 }
 
-fn player_death(player: &mut Object) {
+fn player_death(player: &mut Object, game: &mut Game) {
     // the game ended!
-    println!("You died!");
+    game.messages.add("You Died!!", RED);
 
     // for added effect, transform the palyer into a corpse!
     player.char = '%';
     player.color = DARK_RED;
 }
 
-fn monster_death(monster: &mut Object) {
+fn monster_death(monster: &mut Object, game: &mut Game) {
     // transform it into a nast corpse! it doesn't block, can't be
     // attacked and doesn't move
-    println!("{} is dead!", monster.name);
+    game.messages.add(format!("{} is dead!", monster.name), ORANGE);
     monster.char = '%';
     monster.color = DARK_RED;
     monster.blocks = false;
@@ -281,6 +305,7 @@ struct Object {
     alive: bool,
     fighter: Option<Fighter>,
     ai: Option<Ai>,
+    item: Option<Item>,
 }
 
 impl Object {
@@ -295,6 +320,7 @@ impl Object {
             alive: false,
             fighter: None,
             ai: None,
+            item: None,
         }
     }
 
@@ -321,7 +347,7 @@ impl Object {
         ((dx.pow(2) + dy.pow(2)) as f32).sqrt()
     }
 
-    pub fn take_damage(&mut self, damage: i32) {
+    pub fn take_damage(&mut self, damage: i32, game: &mut Game) {
         // apply damage if possible
         if let Some(fighter) = self.fighter.as_mut() {
             if damage > 0 {
@@ -331,7 +357,7 @@ impl Object {
         if let Some(fighter) = self.fighter {
             if fighter.hp <= 0 {
                 self.alive = false;
-                fighter.on_death.callback(self);
+                fighter.on_death.callback(self, game);
             }
         }
     }
@@ -341,18 +367,25 @@ impl Object {
         let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
         if damage > 0 {
             // make the target take damage
-            println!(
-                "{} attacks {} for {} hit HP.",
-                self.name, target.name, damage
+            game.messages.add(
+                format!(
+                    "{} attacks {} for {} hit points",
+                    self.name, target.name, damage
+                ),
+                WHITE,
             );
-            target.take_damage(damage);
+            target.take_damage(damage, game);
         } else {
-            println!(
-                "{} attacks {} but it has no effect!",
-                self.name, target.name
+            game.messages.add(
+                format!(
+                    "{} attacks {} but it has not effect!",
+                    self.name, target.name
+                ),
+                WHITE,
             );
         }
     }
+
 }
 
 /// Mutably borrow two separate elements from the given slice.
@@ -587,6 +620,7 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
     let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
     render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, LIGHT_RED, DARKER_RED);
 
+
     // blit the panel
     blit(&tcod.panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), &mut tcod.root, (0, PANEL_Y), 1.0, 1.0);
 }
@@ -646,6 +680,7 @@ fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
     }
 }
 
+
 fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> PlayerAction {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
@@ -686,6 +721,16 @@ fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> P
         (Key { code: Right, .. }, _, true) => {
             player_move_or_attack(1, 0, game, objects);
             TookTurn
+        }
+        (Key { code: Shift, .. }, _, true) => {
+            // pick up item
+            let item_id = objects
+                .iter()
+                .position(|object| object.pos() == objects[PLAYER].pos() && object.item.is_some());
+            if let Some(item_id) = item_id {
+                pick_item_up(item_id, game, objects);
+            }
+            DidntTakeTurn
         }
         _ => DidntTakeTurn,
     }
@@ -749,6 +794,25 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
             monster.alive = true;
             objects.push(monster);
         }
+    }
+
+    let num_items = rand::thread_rng().gen_range(0, MAX_ROOM_ITEMS + 1);
+
+    for _ in 0..num_items {
+        let mut x: i32 = 0;
+        let mut y: i32 = 0;
+        // choose a random spot for this items
+        let mut again: bool = true;
+        while again {
+            x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
+            y = rand::thread_rng().gen_range(room.y1 + 1, room.y2);
+            if !is_blocked(x, y, map, objects) {
+                again = false;
+            }
+        }
+        let mut object = Object::new(x, y, '!', "healing potion", VIOLET, false);
+        object.item = Some(Item::Heal);
+        objects.push(object);
     }
 }
 
@@ -836,6 +900,7 @@ fn main() {
         // generate map (at this point it's not drawn to the screen)
         map: make_map(&mut objects),
         messages: Messages::new(),
+        inventory: vec![],
     };
 
     // populate the FOV map, according to the generated map
@@ -851,7 +916,7 @@ fn main() {
     }
 
     let mut previous_player_position = (-1, -1);
-    game.messages.add("Welcome stranger!", RED);
+    game.messages.add("Welcome to Roguelike!", BLUE);
 
     // game loop
     while !tcod.root.window_closed() {
@@ -859,7 +924,7 @@ fn main() {
         tcod.con.clear();
 
         // render the screen
-        let fov_recompute = previous_player_position != (objects[PLAYER].x, objects[PLAYER].y);
+        let fov_recompute = previous_player_position != (objects[PLAYER].pos());
         render_all(&mut tcod, &mut game, &objects, fov_recompute);
 
         tcod.root.flush();
