@@ -5,6 +5,7 @@ use std::cmp;
 use tcod::colors::*;
 use tcod::console::*;
 use tcod::map::{FovAlgorithm, Map as FovMap};
+use std::{thread, time};
 
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
@@ -24,6 +25,8 @@ const MAX_ROOM_MONSTERS: i32 = 2;
 const MAX_ROOM_ITEMS: i32 = 1;
 const CORPSE_CONSUME_HP: i32 = 2;
 const HEAL_AMOUNT: i32 = 10;
+const RING_RANGE: i32 = 4;
+const FIRE_RING_DAMAGE: i32 = 20;
 
 const BAR_WIDTH: i32 = 20;
 const PANEL_HEIGHT: i32 = 7;
@@ -109,6 +112,7 @@ enum UseResult {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     Heal,
+    FireRing,
 }
 
 fn cast_heal(_inventory_id: usize, _tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) -> UseResult {
@@ -129,12 +133,59 @@ fn cast_heal(_inventory_id: usize, _tcod: &mut Tcod, game: &mut Game, objects: &
     UseResult::Cancelled
 }
 
+fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) -> UseResult {
+    // target all monsters within a certain tile range of the player
+    let monster_ids = get_monsters_in_range(tcod, objects, RING_RANGE);
+    let mut no_effect: bool = true;
+    for monster_id in monster_ids {
+        if let Some(monster_id) = monster_id {
+            game.messages.add(
+                format!(
+                    "Fire ring singes {} for {} hit points",
+                    objects[monster_id].name, FIRE_RING_DAMAGE
+                ),
+                LIGHT_BLUE,
+            );
+            no_effect = false;
+            objects[monster_id].take_damage(FIRE_RING_DAMAGE, game);
+        }
+    }
+
+    if no_effect == true {
+        game.messages.add("Fire ring has no effect", RED);
+    }
+
+    UseResult::UsedUp
+
+
+}
+
+fn get_monsters_in_range(tcod: &mut Tcod, objects: &mut [Object], range: i32) -> Vec<Option<usize>> {
+    let mut monsters_in_range = vec![];
+    for (id, object) in objects.iter().enumerate() {
+        if (id != PLAYER)
+            && object.fighter.is_some()
+            && object.ai.is_some()
+            && tcod.fov.is_in_fov(object.x, object.y)
+        {
+            let distance = objects[PLAYER].distance_to(object);
+            if distance <= range as f32 {
+                monsters_in_range.push(Some(id));
+            }
+        }
+    }
+    monsters_in_range
+}
+
+
+
 fn use_item(inventory_id: usize, tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) {
     use Item::*;
 
     if let Some(item) = game.inventory[inventory_id].item {
         let on_use = match item {
             Heal => cast_heal,
+            FireRing => cast_fire_ring,
         };
 
         match on_use(inventory_id, tcod, game, objects) {
@@ -584,12 +635,17 @@ fn make_map(objects: &mut Vec<Object>) -> Map {
             rooms.push(new_room);
         }
     }
-    // Get a random room to place the player in
+    // get a random room to place the player in
     let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
     let mut center: (i32, i32) = rooms[random_room_number].center();
     objects[PLAYER].set_pos(center.0, center.1);
 
-    // Get a random room to place a teleport tile in
+    // place a fire ring scroll nearby player's starting position
+    let mut object = Object::new(objects[PLAYER].x + 1, objects[PLAYER].y + 1, '#', "Fire ring spell", LIGHT_YELLOW, false);
+    object.item = Some(Item::FireRing);
+    objects.push(object);
+
+    // get a random room to place a teleport tile in
     let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
     center = rooms[random_room_number].center();
     map[center.0 as usize][center.1 as usize] = Tile::teleport();
@@ -997,10 +1053,22 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
                 again = false;
             }
         }
-        let mut object = Object::new(x, y, '!', "healing potion", VIOLET, false);
-        object.item = Some(Item::Heal);
-        objects.push(object);
+        let dice = rand::random::<f32>();
+        let item = if dice < 0.7 {
+            // healing potion
+            let mut object = Object::new(x, y, '!', "healing potion", VIOLET, false);
+            object.item = Some(Item::Heal);
+            object
+        } else {
+            // a fire ring spell
+            let mut object = Object::new(x, y, '#', "Fire ring spell", LIGHT_YELLOW, false);
+            object.item = Some(Item::FireRing);
+            object
+        };
+        objects.push(item);
     }
+
+
 }
 
 fn render_bar(
