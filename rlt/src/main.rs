@@ -1,5 +1,4 @@
-// This file is generated automatically. Do not edit it directly.
-// See the Contributing section in README on how to make changes to it.
+// This file is generated automatically. Do not edit it directly.  See the Contributing section in README on how to make changes to it.
 use rand::Rng;
 use std::cmp;
 use tcod::colors::*;
@@ -102,6 +101,7 @@ struct Tile {
     teleport: bool,
     explored: bool,
     has_corpse: bool,
+    on_fire: (bool, i32),
 }
 
 enum UseResult {
@@ -134,7 +134,8 @@ fn cast_heal(_inventory_id: usize, _tcod: &mut Tcod, game: &mut Game, objects: &
 }
 
 fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) -> UseResult {
-    // target all monsters within a certain tile range of the player
+
+    // target all monsters within the RING_RANGEe of the player
     let monster_ids = get_monsters_in_range(tcod, objects, RING_RANGE);
     let mut no_effect: bool = true;
     for monster_id in monster_ids {
@@ -151,13 +152,32 @@ fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, object
         }
     }
 
-    if no_effect == true {
+    // no effect message if there are no monsters in the player's ring range
+    if no_effect {
         game.messages.add("Fire ring has no effect", RED);
     }
 
+    // set tiles on fire with range of cast
+    set_tiles_on_fire(game, objects, RING_RANGE);
     UseResult::UsedUp
+}
 
-
+fn set_tiles_on_fire(game: &mut Game, objects: &mut [Object], range: i32) {
+    let pos = objects[PLAYER].pos();
+    for y in (-1 * range)..range {
+        for x in pos.0..=(pos.0 + range) {
+            if game.map[x as usize][(pos.1 + y) as usize].perimeter || game.map[x as usize][(pos.1 + y) as usize].blocked {
+                break;
+            }
+            game.map[x as usize][(pos.1 + y) as usize].on_fire = (true, 20 as i32);
+        }
+        for x in (pos.0 - range + 1)..pos.0 {
+            if game.map[x as usize][(pos.1 + y) as usize].perimeter || game.map[x as usize][(pos.1 + y) as usize].blocked {
+                break;
+            }
+            game.map[x as usize][(pos.1 + y) as usize].on_fire = (true, 20 as i32);
+        }
+    }
 }
 
 fn get_monsters_in_range(tcod: &mut Tcod, objects: &mut [Object], range: i32) -> Vec<Option<usize>> {
@@ -306,6 +326,7 @@ impl Tile {
             teleport: false,
             explored: false,
             has_corpse: false,
+            on_fire: (false, 0),
         }
     }
 
@@ -317,6 +338,7 @@ impl Tile {
             teleport: false,
             explored: false,
             has_corpse: false,
+            on_fire: (false, 0),
         }
     }
     pub fn perimeter() -> Self {
@@ -327,6 +349,7 @@ impl Tile {
             teleport: false,
             explored: false,
             has_corpse: false,
+            on_fire: (false, 0),
         }
     }
     pub fn teleport() -> Self {
@@ -337,6 +360,7 @@ impl Tile {
             teleport: true,
             explored: false,
             has_corpse: false,
+            on_fire: (false, 0),
         }
     }
     pub fn is_teleportable_to(&self) -> bool {
@@ -538,6 +562,7 @@ fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut
     }
 }
 
+
 fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
     // checks if the tile is blocking
     if map[x as usize][y as usize].blocked {
@@ -694,18 +719,30 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
             let wall = game.map[x as usize][y as usize].block_sight;
             let perimeter = game.map[x as usize][y as usize].perimeter;
             let teleport = game.map[x as usize][y as usize].teleport;
+            let on_fire = game.map[x as usize][y as usize].on_fire;
+  
+            // check if tile is on fire. Decrement count if still on fire. If count is 0 tile is no
+            // longer on fire
+            if on_fire.0 {
+                if game.map[x as usize][y as usize].on_fire.1 == 0 {
+                    game.map[x as usize][y as usize].on_fire.0 = false;
+                } else {
+                    game.map[x as usize][y as usize].on_fire.1 -= 1;
+                }
+            }
 
-            let color = match (visible, wall, perimeter, teleport) {
+            let color = match (visible, wall, perimeter, teleport, on_fire.0) {
                 // Outside player's FOV
-                (false, true, true, false) => COLOR_DARK_PERIMETER,
-                (false, true, false, false) => COLOR_DARK_WALL,
-                (false, false, false, true) => COLOR_DARK_TELEPORT,
-                (false, false, false, false) => COLOR_DARK_GROUND,
+                (false, true, true, false, false) => COLOR_DARK_PERIMETER,
+                (false, true, false, false, false) => COLOR_DARK_WALL,
+                (false, false, false, true, false) => COLOR_DARK_TELEPORT,
+                (false, false, false, false, false) => COLOR_DARK_GROUND,
                 // Inside player's FOV
-                (true, true, true, false) => COLOR_LIGHT_PERIMETER,
-                (true, true, false, false) => COLOR_LIGHT_WALL,
-                (true, false, false, true) => COLOR_LIGHT_TELEPORT,
-                (true, false, false, false) => COLOR_DARK_GROUND,
+                (true, true, true, false, false) => COLOR_LIGHT_PERIMETER,
+                (true, true, false, false, false) => COLOR_LIGHT_WALL,
+                (true, false, false, true, false) => COLOR_LIGHT_TELEPORT,
+                (true, false, false, false, false) => COLOR_DARK_GROUND,
+                (_, _, _, _, true) => LIGHTER_RED,
                 _ => COLOR_DARK_PERIMETER,
             };
 
