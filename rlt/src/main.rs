@@ -142,7 +142,7 @@ fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, object
         if let Some(monster_id) = monster_id {
             game.messages.add(
                 format!(
-                    "Fire ring singes {} for {} hit points",
+                    "Fire ring conflagrated the {} for {} hit points",
                     objects[monster_id].name, FIRE_RING_DAMAGE
                 ),
                 LIGHT_BLUE,
@@ -154,7 +154,7 @@ fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, object
 
     // no effect message if there are no monsters in the player's ring range
     if no_effect {
-        game.messages.add("Fire ring has no effect", RED);
+        game.messages.add("Fire ring caused no direct damage", RED);
     }
 
     // set tiles on fire with range of cast
@@ -1154,6 +1154,21 @@ fn ai_take_turn(monster_id: usize, tcod: &Tcod, game: &mut Game, objects: &mut [
             let (monster, player) = mut_two(monster_id, PLAYER, objects);
             monster.attack(player, game);
         }
+    }
+    let tile_state = game.map[monster_x as usize][monster_y as usize].on_fire;
+    if tile_state.0 {
+        let mut fire_damage = match tile_state.1 {
+            1..=5 => 1,
+            _ => 2,
+        };
+        objects[monster_id].take_damage(fire_damage, game);
+        game.messages.add(
+            format!("Your smoldering fire ring singed the {} for {} HP",
+                    objects[monster_id].name, fire_damage
+            ),
+            LIGHT_BLUE,
+        );
+        game.map[monster_x as usize][monster_y as usize].on_fire.0 = false;
     }
 }
 
