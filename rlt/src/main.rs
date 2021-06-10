@@ -1,42 +1,51 @@
-// This file is generated automatically. Do not edit it directly.  See the Contributing section in README on how to make changes to it.
 use rand::Rng;
 use std::cmp;
 use tcod::colors::*;
 use tcod::console::*;
 use tcod::map::{FovAlgorithm, Map as FovMap};
-use std::{thread, time};
 
+// Field of View
 const FOV_ALGO: FovAlgorithm = FovAlgorithm::Basic;
 const FOV_LIGHT_WALLS: bool = true;
 const TORCH_RADIUS: i32 = 15;
 
-// actual size of the window
+// The entire size of the window
 const SCREEN_WIDTH: i32 = 120;
 const SCREEN_HEIGHT: i32 = 80;
-// size of the map
+
+// Dimensions of the map, and rooms
 const MAP_WIDTH: i32 = 80;
 const MAP_HEIGHT: i32 = 43;
 const INVENTORY_WIDTH: i32 = 50;
 const ROOM_MAX_SIZE: i32 = 20;
 const ROOM_MIN_SIZE: i32 = 5;
+
+// Room numbers and contents
 const MAX_ROOMS: i32 = 30;
 const MAX_ROOM_MONSTERS: i32 = 2;
 const MAX_ROOM_ITEMS: i32 = 1;
+
+// Misc properties
 const CORPSE_CONSUME_HP: i32 = 2;
 const HEAL_AMOUNT: i32 = 10;
 const RING_RANGE: i32 = 4;
 const FIRE_RING_DAMAGE: i32 = 20;
 
+// Panel and messaging interface
 const BAR_WIDTH: i32 = 20;
 const PANEL_HEIGHT: i32 = 7;
-const PANEL_Y:i32 = SCREEN_HEIGHT - PANEL_HEIGHT;
+const PANEL_Y: i32 = SCREEN_HEIGHT - PANEL_HEIGHT;
 const MSG_X: i32 = BAR_WIDTH + 2;
 const MSG_WIDTH: i32 = SCREEN_WIDTH - BAR_WIDTH - 2;
 const MSG_HEIGHT: usize = PANEL_HEIGHT as usize - 1;
 
+// FPS
 const LIMIT_FPS: i32 = 20; // 20 frames-per-second maximum
+
+// Player is always 0 in Objects
 const PLAYER: usize = 0;
 
+// RGB data for various Tile states
 const COLOR_DARK_WALL: Color = Color {
     r: 120,
     g: 120,
@@ -62,14 +71,10 @@ const COLOR_DARK_GROUND: Color = Color {
     g: 90,
     b: 50,
 };
-const COLOR_LIGHT_GROUND: Color = Color {
-    r: 70,
-    g: 140,
-    b: 40,
-};
 const COLOR_LIGHT_TELEPORT: Color = Color { r: 0, g: 0, b: 225 };
 const COLOR_DARK_TELEPORT: Color = Color { r: 0, g: 0, b: 130 };
 
+// Main struct for passing game states root, con, panel and FOV
 struct Tcod {
     root: Root,
     con: Offscreen,
@@ -77,14 +82,17 @@ struct Tcod {
     fov: FovMap,
 }
 
+// The map is a vector of Tile vectors and each Tile is accessed as in 'map[x][y]'
 type Map = Vec<Vec<Tile>>;
 
+// Game struct contains the map, messages, and inventory
 struct Game {
     map: Map,
     messages: Messages,
     inventory: Vec<Object>,
 }
 
+// Player action can for each game tick can be one of three actions
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PlayerAction {
     TookTurn,
@@ -92,7 +100,7 @@ enum PlayerAction {
     Exit,
 }
 
-/// A tile of the map and its properties
+// A Tile is a single square on the Map which contains a number of properties
 #[derive(Clone, Copy, Debug)]
 struct Tile {
     blocked: bool,
@@ -104,28 +112,36 @@ struct Tile {
     on_fire: (bool, i32),
 }
 
+// Items can be used or their use can be cancelled if there was an error is usage
 enum UseResult {
     UsedUp,
     Cancelled,
 }
 
+// Items which are non-fighting objects
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     Heal,
     FireRing,
 }
 
-fn cast_heal(_inventory_id: usize, _tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) -> UseResult {
+/// Increases a fighter object's HP by HEAL_AMOUNT
+///
+fn cast_heal(
+    _inventory_id: usize,
+    _tcod: &mut Tcod,
+    game: &mut Game,
+    objects: &mut [Object],
+) -> UseResult {
     // heal the player
     if let Some(fighter) = objects[PLAYER].fighter {
         if fighter.hp == fighter.max_hp {
             game.messages.add("You are already at full health", RED);
             return UseResult::Cancelled;
         }
-        game.messages
-            .add(
+        game.messages.add(
             format!("You have healed yourself for {} HP", HEAL_AMOUNT),
-            LIGHT_VIOLET
+            LIGHT_VIOLET,
         );
         objects[PLAYER].heal(HEAL_AMOUNT);
         return UseResult::UsedUp;
@@ -133,9 +149,16 @@ fn cast_heal(_inventory_id: usize, _tcod: &mut Tcod, game: &mut Game, objects: &
     UseResult::Cancelled
 }
 
-fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) -> UseResult {
-
-    // target all monsters within the RING_RANGEe of the player
+/// Casts a ring of fire around the player which causes direct damage if a fighter object is in
+/// range or indirect if a fighter object comes into its range and the tile is still "hot"
+///
+fn cast_fire_ring(
+    _inventory_id: usize,
+    tcod: &mut Tcod,
+    game: &mut Game,
+    objects: &mut [Object],
+) -> UseResult {
+    // target all monsters within the RING_RANGE of the player
     let monster_ids = get_monsters_in_range(tcod, objects, RING_RANGE);
     let mut no_effect: bool = true;
     for monster_id in monster_ids {
@@ -162,25 +185,40 @@ fn cast_fire_ring(_inventory_id: usize, tcod: &mut Tcod, game: &mut Game, object
     UseResult::UsedUp
 }
 
+/// Tiles can be set on fire, for example, after the Fire Ring spell is casted. The tiles
+/// eventually return to a normal state after 10 game ticks or if a monster steps on the tile that
+/// is on fire
+///
 fn set_tiles_on_fire(game: &mut Game, objects: &mut [Object], range: i32) {
     let pos = objects[PLAYER].pos();
-    for y in (-1 * range)..range {
+    for y in (-range)..range {
         for x in pos.0..=(pos.0 + range) {
-            if game.map[x as usize][(pos.1 + y) as usize].perimeter || game.map[x as usize][(pos.1 + y) as usize].blocked {
+            if game.map[x as usize][(pos.1 + y) as usize].perimeter
+                || game.map[x as usize][(pos.1 + y) as usize].blocked
+            {
                 break;
             }
-            game.map[x as usize][(pos.1 + y) as usize].on_fire = (true, 20 as i32);
+            game.map[x as usize][(pos.1 + y) as usize].on_fire = (true, 20_i32);
         }
         for x in (pos.0 - range + 1)..pos.0 {
-            if game.map[x as usize][(pos.1 + y) as usize].perimeter || game.map[x as usize][(pos.1 + y) as usize].blocked {
+            if game.map[x as usize][(pos.1 + y) as usize].perimeter
+                || game.map[x as usize][(pos.1 + y) as usize].blocked
+            {
                 break;
             }
-            game.map[x as usize][(pos.1 + y) as usize].on_fire = (true, 20 as i32);
+            game.map[x as usize][(pos.1 + y) as usize].on_fire = (true, 20_i32);
         }
     }
 }
 
-fn get_monsters_in_range(tcod: &mut Tcod, objects: &mut [Object], range: i32) -> Vec<Option<usize>> {
+/// Determines all the monsters that are in a certain range. They are returned as Option(fighters)
+/// in the vector
+///
+fn get_monsters_in_range(
+    tcod: &mut Tcod,
+    objects: &mut [Object],
+    range: i32,
+) -> Vec<Option<usize>> {
     let mut monsters_in_range = vec![];
     for (id, object) in objects.iter().enumerate() {
         if (id != PLAYER)
@@ -197,8 +235,9 @@ fn get_monsters_in_range(tcod: &mut Tcod, objects: &mut [Object], range: i32) ->
     monsters_in_range
 }
 
-
-
+/// Uses an item in inventory, and removes in from the inventory by inventory_id if sucessfully
+/// used. Cancelled otherwise.
+///
 fn use_item(inventory_id: usize, tcod: &mut Tcod, game: &mut Game, objects: &mut [Object]) {
     use Item::*;
 
@@ -225,7 +264,8 @@ fn use_item(inventory_id: usize, tcod: &mut Tcod, game: &mut Game, objects: &mut
     }
 }
 
-
+/// Picks up an item. The inventory is capped at 26 items
+///
 fn pick_item_up(object_id: usize, game: &mut Game, objects: &mut Vec<Object>) {
     if game.inventory.len() >= 26 {
         game.messages.add(
@@ -243,26 +283,29 @@ fn pick_item_up(object_id: usize, game: &mut Game, objects: &mut Vec<Object>) {
     }
 }
 
+// A message containing a string and text color for output
+//
 struct Messages {
     messages: Vec<(String, Color)>,
 }
 
 impl Messages {
+    /// Creates a new vector to hold the messages
     pub fn new() -> Self {
-        Self{ messages: vec![] }
+        Self { messages: vec![] }
     }
-
-    // add the new message (text, color)
+    /// Adds a new message and color
     pub fn add<T: Into<String>>(&mut self, message: T, color: Color) {
         self.messages.push((message.into(), color));
     }
-
-    // iterator over message
+    /// iterator for messages
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &(String, Color)> {
         self.messages.iter()
     }
 }
 
+// A Fighter is an object such as a monster or player that can attack, be attacked, and die
+//
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Fighter {
     max_hp: i32,
@@ -290,24 +333,24 @@ impl DeathCallback {
 }
 
 fn player_death(player: &mut Object, game: &mut Game) {
-    // the game ended!
+    // game over
     game.messages.add("You Died!!", RED);
-
-    // for added effect, transform the palyer into a corpse!
     player.char = '%';
     player.color = DARK_RED;
 }
 
 fn monster_death(monster: &mut Object, game: &mut Game) {
-    // transform it into a nast corpse! it doesn't block, can't be
-    // attacked and doesn't move
-    game.messages.add(format!("{} is dead!", monster.name), ORANGE);
+    // monster has died, and becomes an ASCII '%' on the tile where it was killed by the player
+    game.messages
+        .add(format!("{} is dead!", monster.name), ORANGE);
     monster.char = '%';
     monster.color = DARK_RED;
     monster.blocks = false;
     monster.fighter = None;
     monster.ai = None;
     monster.name = format!("remains of {}", monster.name);
+
+    // corpse position and tile update for corpse regen HP
     let corpse = monster.pos();
     game.map[corpse.0 as usize][corpse.1 as usize].has_corpse = true;
 }
@@ -317,6 +360,7 @@ enum Ai {
     Basic,
 }
 
+// The various tile states
 impl Tile {
     pub fn empty() -> Self {
         Tile {
@@ -364,21 +408,15 @@ impl Tile {
         }
     }
     pub fn is_teleportable_to(&self) -> bool {
-        if self.blocked == false && self.teleport == false {
-            true
-        } else {
-            false
-        }
+        !self.blocked && !self.teleport
     }
     pub fn is_empty(&self) -> bool {
         !self.blocked
     }
 }
 
-/// A room on the map marked by x and y coordinates
-///
-///
-///
+// A room on the map marked by x and y coordinates
+//
 #[derive(Clone, Copy, Debug)]
 struct Room {
     x1: i32,
@@ -387,7 +425,7 @@ struct Room {
     y2: i32,
 }
 
-/// Room Example:
+/// Example of a room:
 ///
 /// (x1,y1)
 ///     |-- width--|
@@ -426,8 +464,9 @@ fn create_room(room: Room, map: &mut Map) {
     }
 }
 
-/// This is a generic object: the player, a monster, an item, the stairs...
-/// It's always represented by a character on screen.
+/// A basic object type which has coordinates and a ASCII char that represents it along with
+/// additional properties which give it added functionality if required
+///
 #[derive(Debug)]
 struct Object {
     x: i32,
@@ -445,12 +484,12 @@ struct Object {
 impl Object {
     pub fn new(x: i32, y: i32, char: char, name: &str, color: Color, blocks: bool) -> Self {
         Object {
-            x: x,
-            y: y,
-            char: char,
-            color: color,
+            x,
+            y,
+            char,
+            color,
             name: name.into(),
-            blocks: blocks,
+            blocks,
             alive: false,
             fighter: None,
             ai: None,
@@ -458,31 +497,33 @@ impl Object {
         }
     }
 
-    /// set the color and then draw the character that represents this object at its position
+    /// Draws the object to the screen with the correct color and coordinates
     pub fn draw(&self, con: &mut dyn Console) {
         con.set_default_foreground(self.color);
         con.put_char(self.x, self.y, self.char, BackgroundFlag::None);
     }
 
-    /// returns the current position of the object
+    /// Returns the current position of the object
     pub fn pos(&self) -> (i32, i32) {
         (self.x, self.y)
     }
 
-    /// sets the position of an object
+    /// Sets the position of an object
     pub fn set_pos(&mut self, x: i32, y: i32) {
         self.x = x;
         self.y = y;
     }
 
+    /// Returns the distance from the invoking object to the another object
     pub fn distance_to(&self, other: &Object) -> f32 {
         let dx = other.x - self.x;
         let dy = other.y - self.y;
         ((dx.pow(2) + dy.pow(2)) as f32).sqrt()
     }
 
+    /// A Fighter Object takes an amount of damage
     pub fn take_damage(&mut self, damage: i32, game: &mut Game) {
-        // apply damage if possible
+        // incur damage to health meter
         if let Some(fighter) = self.fighter.as_mut() {
             if damage > 0 {
                 fighter.hp -= damage;
@@ -495,6 +536,7 @@ impl Object {
             }
         }
     }
+    /// Player regains hp from the corpse of a slain monster
     pub fn consume_corpse(&mut self, hp: i32, game: &mut Game) {
         // increase hp if possible
         if let Some(fighter) = self.fighter.as_mut() {
@@ -505,15 +547,11 @@ impl Object {
             }
         }
         game.messages.add(
-            format!(
-                "You consumed a corpse and gained {} HP", 
-                CORPSE_CONSUME_HP
-            ),
+            format!("You consumed a corpse and gained {} HP", CORPSE_CONSUME_HP),
             LIGHT_VIOLET,
         );
     }
-
-    // Increase hp by 'amount'
+    /// Increases invoking objects HP by a specific amount
     pub fn heal(&mut self, amount: i32) {
         if let Some(ref mut fighter) = self.fighter {
             fighter.hp += amount;
@@ -522,12 +560,12 @@ impl Object {
             }
         }
     }
-
+    /// Invoking object attacks another object
     pub fn attack(&mut self, target: &mut Object, game: &mut Game) {
-        // a simple formula for attack damage
+        // Damage formula for computing damage based on power and defense attributes
         let damage = self.fighter.map_or(0, |f| f.power) - target.fighter.map_or(0, |f| f.defense);
         if damage > 0 {
-            // make the target take damage
+            // target takes an amount of damage
             game.messages.add(
                 format!(
                     "{} attacks {} for {} hit points",
@@ -546,11 +584,10 @@ impl Object {
             );
         }
     }
-
 }
 
-/// Mutably borrow two separate elements from the given slice.
-/// Panics when the indexes are equal or out of bounds.
+/// Parses two elements from slice and mutably borrows
+///
 fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut T, &mut T) {
     assert!(first_index != second_index);
     let split_as_index = cmp::max(first_index, second_index);
@@ -562,7 +599,8 @@ fn mut_two<T>(first_index: usize, second_index: usize, items: &mut [T]) -> (&mut
     }
 }
 
-
+/// Returns true if the tile is blocking otherwise returns false
+///
 fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
     // checks if the tile is blocking
     if map[x as usize][y as usize].blocked {
@@ -575,21 +613,21 @@ fn is_blocked(x: i32, y: i32, map: &Map, objects: &[Object]) -> bool {
         .any(|object| object.blocks && object.pos() == (x, y))
 }
 
+/// Used for movement towards a specific location
+///
 fn move_towards(id: usize, target_x: i32, target_y: i32, map: &Map, objects: &mut [Object]) {
     // vector form this object to the target, and distance
     let dx = target_x - objects[id].x;
     let dy = target_y - objects[id].y;
     let distance = ((dx.pow(2) + dy.pow(2)) as f32).sqrt();
 
-    // noramalize it to length 1, then round it and
-    // convert to integer so the movement is restricted to the map grid
-    //
     let dx = (dx as f32 / distance).round() as i32;
     let dy = (dy as f32 / distance).round() as i32;
     move_by(id, dx, dy, map, objects);
 }
 
 /// move by the given amount, if the destination is not blocked
+///
 fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
     let (x, y) = objects[id].pos();
     if !is_blocked(x + dx, y + dy, map, objects) {
@@ -597,17 +635,18 @@ fn move_by(id: usize, dx: i32, dy: i32, map: &Map, objects: &mut [Object]) {
     }
 }
 
+/// Initial function to generate dungeon, spawn monsters, drop items, and place the player
 fn make_map(objects: &mut Vec<Object>) -> Map {
     // fill map with "unblocked" tiles
     let mut map = vec![vec![Tile::wall(); MAP_HEIGHT as usize]; MAP_WIDTH as usize];
 
     // create walled perimeter in game map
     for tile in 0..MAP_WIDTH {
-        map[tile as usize][0 as usize] = Tile::perimeter();
+        map[tile as usize][0_usize] = Tile::perimeter();
         map[tile as usize][(MAP_HEIGHT - 1) as usize] = Tile::perimeter();
     }
     for tile in 0..MAP_HEIGHT {
-        map[0 as usize][tile as usize] = Tile::perimeter();
+        map[0_usize][tile as usize] = Tile::perimeter();
         map[(MAP_WIDTH - 1) as usize][tile as usize] = Tile::perimeter();
     }
 
@@ -641,12 +680,7 @@ fn make_map(objects: &mut Vec<Object>) -> Map {
             place_objects(new_room, &map, objects);
             let (new_x, new_y) = new_room.center();
             if !rooms.is_empty() {
-                // all rooms after the first:
-                // connect it to the previous room with a tunnel
-                // center coordinates of the previous room
                 let (prev_x, prev_y) = rooms[rooms.len() - 1].center();
-
-                // toss a coin (random bool value -- either true or false)
                 if rand::random() {
                     // first move horizontally, then vertically
                     create_horizontal_passage(prev_x, new_x, prev_y, &mut map);
@@ -660,24 +694,33 @@ fn make_map(objects: &mut Vec<Object>) -> Map {
             rooms.push(new_room);
         }
     }
-    // get a random room to place the player in
-    let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
+    // Get a random room and plae the player in it
+    let random_room_number = rand::thread_rng().gen_range(0, rooms.len());
     let mut center: (i32, i32) = rooms[random_room_number].center();
     objects[PLAYER].set_pos(center.0, center.1);
 
-    // place a fire ring scroll nearby player's starting position
-    let mut object = Object::new(objects[PLAYER].x + 1, objects[PLAYER].y + 1, '#', "Fire ring spell", LIGHT_YELLOW, false);
+    // Place a Fire Ring Scroll in the vicinty of the player's starting position
+    let mut object = Object::new(
+        objects[PLAYER].x + 1,
+        objects[PLAYER].y + 1,
+        '#',
+        "Fire Ring Scroll",
+        LIGHT_YELLOW,
+        false,
+    );
     object.item = Some(Item::FireRing);
     objects.push(object);
 
-    // get a random room to place a teleport tile in
-    let mut random_room_number = rand::thread_rng().gen_range(0, rooms.len());
+    // Get a random room and place a teleport tile in it
+    let random_room_number = rand::thread_rng().gen_range(0, rooms.len());
     center = rooms[random_room_number].center();
     map[center.0 as usize][center.1 as usize] = Tile::teleport();
 
     map
 }
 
+/// Creats a horizontal passage to from x1 to x2 at y on y-axis
+///
 fn create_horizontal_passage(x1: i32, x2: i32, y: i32, map: &mut Map) {
     let passage: (i32, i32) = {
         if x1 <= x2 {
@@ -692,6 +735,8 @@ fn create_horizontal_passage(x1: i32, x2: i32, y: i32, map: &mut Map) {
     }
 }
 
+/// Creats a vertical passage from y1 to y2 at x on x-axis
+///
 fn create_vertical_passage(y1: i32, y2: i32, x: i32, map: &mut Map) {
     let passage: (i32, i32) = {
         if y1 <= y2 {
@@ -705,14 +750,16 @@ fn create_vertical_passage(y1: i32, y2: i32, x: i32, map: &mut Map) {
     }
 }
 
+/// main function to render the game state, objects in FOV, and map
 fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recompute: bool) {
     if fov_recompute {
-        // recompute FOV if necessary
+        // If necessary FOV needs to be updated
         let player = &objects[PLAYER];
         tcod.fov
             .compute_fov(player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO);
     }
-    // go through all tiles, and set their background color
+
+    // Set Tile background colors with pattern matching
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
             let visible = tcod.fov.is_in_fov(x, y);
@@ -720,9 +767,9 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
             let perimeter = game.map[x as usize][y as usize].perimeter;
             let teleport = game.map[x as usize][y as usize].teleport;
             let on_fire = game.map[x as usize][y as usize].on_fire;
-  
-            // check if tile is on fire. Decrement count if still on fire. If count is 0 tile is no
-            // longer on fire
+
+            // Check if Tile is on fire. Decrement count if still on fire. If count is 0, then
+            // update Tile's status
             if on_fire.0 {
                 if game.map[x as usize][y as usize].on_fire.1 == 0 {
                     game.map[x as usize][y as usize].on_fire.0 = false;
@@ -746,6 +793,7 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
                 _ => COLOR_DARK_PERIMETER,
             };
 
+            // Explored and unexplored tiles update
             let explored = &mut game.map[x as usize][y as usize].explored;
             if visible {
                 *explored = true;
@@ -756,19 +804,16 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
             }
         }
     }
-
     let mut to_draw: Vec<_> = objects
         .iter()
         .filter(|o| tcod.fov.is_in_fov(o.x, o.y))
         .collect();
-    // sort so that non-blocking objects come first
     to_draw.sort_by(|o1, o2| o1.blocks.cmp(&o2.blocks));
-    // draw the objects in the list
     for object in &to_draw {
         object.draw(&mut tcod.con);
     }
 
-    // blit the contents of "con" to the root console
+    // blit is a special tcod function to push the contents of "con" to the root console
     blit(
         &tcod.con,
         (0, 0),
@@ -778,11 +823,11 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
         1.0,
         1.0,
     );
-    
+
     tcod.panel.set_default_background(BLACK);
     tcod.panel.clear();
 
-    // print the game messages
+    // Print messages to UI panel
     let mut y = MSG_HEIGHT as i32;
     for &(ref msg, color) in game.messages.iter().rev() {
         let msg_height = tcod.panel.get_height_rect(MSG_X, y, MSG_WIDTH, 0, msg);
@@ -794,19 +839,38 @@ fn render_all(tcod: &mut Tcod, game: &mut Game, objects: &[Object], fov_recomput
         tcod.panel.print_rect(MSG_X, y, MSG_WIDTH, 0, msg);
     }
 
-    // show player stats
+    // Render the player's attributes (health meter)
     let hp = objects[PLAYER].fighter.map_or(0, |f| f.hp);
     let max_hp = objects[PLAYER].fighter.map_or(0, |f| f.max_hp);
-    render_bar(&mut tcod.panel, 1, 1, BAR_WIDTH, "HP", hp, max_hp, LIGHT_RED, DARKER_RED);
+    render_bar(
+        &mut tcod.panel,
+        1,
+        1,
+        BAR_WIDTH,
+        "HP",
+        hp,
+        max_hp,
+        LIGHT_RED,
+        DARKER_RED,
+    );
 
-
-    // blit the panel
-    blit(&tcod.panel, (0, 0), (SCREEN_WIDTH, PANEL_HEIGHT), &mut tcod.root, (0, PANEL_Y), 1.0, 1.0);
+    // Output the panel with blit
+    blit(
+        &tcod.panel,
+        (0, 0),
+        (SCREEN_WIDTH, PANEL_HEIGHT),
+        &mut tcod.root,
+        (0, PANEL_Y),
+        1.0,
+        1.0,
+    );
 }
 
+/// Checks if a the player is a on a Tile that teleports. Changes player's position if true,
+/// otherwise there is no effect
 fn check_teleport(map: &mut Map, player: &mut Object) {
     // Check if player is on a teleport tile
-    if map[player.x as usize][player.y as usize].teleport == true {
+    if map[player.x as usize][player.y as usize].teleport {
         let prev = (player.x, player.y);
         // Randomly selects a tiles, checks if its suitable to teleport to and changes
         // player's current location to that tile when found
@@ -820,10 +884,13 @@ fn check_teleport(map: &mut Map, player: &mut Object) {
                 break;
             }
         }
-        place_rand_teleport_tile(map, player);
+        place_rand_teleport_tile(map);
     }
 }
 
+/// Returns the coordinates of a randomly generated map Tile that is not in a corridor or
+/// blocking the entrance to or exit from a corridor
+///
 fn get_tile_non_passage_blocking(map: &Map) -> (i32, i32) {
     // Get random (x,y) coord for a tile
     let mut x: i32 = rand::thread_rng().gen_range(3, MAP_WIDTH - 3);
@@ -849,7 +916,9 @@ fn get_tile_non_passage_blocking(map: &Map) -> (i32, i32) {
     (x, y)
 }
 
-fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
+/// Places a randomly generated teleport Tile in the game map
+///
+fn place_rand_teleport_tile(map: &mut Map) {
     loop {
         let tile: (i32, i32) = get_tile_non_passage_blocking(map);
         if map[tile.0 as usize][tile.1 as usize].is_teleportable_to() {
@@ -859,7 +928,7 @@ fn place_rand_teleport_tile(map: &mut Map, player: &Object) {
     }
 }
 
-
+/// Key controls for player movement and gameplay
 fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> PlayerAction {
     use tcod::input::Key;
     use tcod::input::KeyCode::*;
@@ -910,7 +979,7 @@ fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> P
             if let Some(item_id) = item_id {
                 pick_item_up(item_id, game, objects);
             }
-            if game.map[position.0 as usize][position.1 as usize].has_corpse == true {
+            if game.map[position.0 as usize][position.1 as usize].has_corpse {
                 objects[PLAYER].consume_corpse(CORPSE_CONSUME_HP, game);
                 game.map[position.0 as usize][position.1 as usize].has_corpse = false;
                 for object in objects {
@@ -921,12 +990,11 @@ fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> P
             }
             DidntTakeTurn
         }
-        (Key { code: Tab, ..}, _, true) => {
-            // shot the inventory
+        (Key { code: Tab, .. }, _, true) => {
             let inventory_index = inventory_menu(
                 &game.inventory,
                 "Press the key next to an item to use it, or any other to cancel.\n",
-                &mut tcod.root
+                &mut tcod.root,
             );
             if let Some(inventory_index) = inventory_index {
                 use_item(inventory_index, tcod, game, objects);
@@ -937,20 +1005,18 @@ fn handle_keys(tcod: &mut Tcod, game: &mut Game, objects: &mut Vec<Object>) -> P
     }
 }
 
+/// tcod menu setup primarly reused from tcodlib menu tutorial  
 fn menu<T: AsRef<str>>(header: &str, options: &[T], width: i32, root: &mut Root) -> Option<usize> {
     assert!(
         options.len() <= 26,
         "Cannot have a menu with more than 26 options."
     );
 
-    // calculate total height for the header (after auto-wrap) and one line per option
     let header_height = root.get_height_rect(0, 0, width, SCREEN_HEIGHT, header);
     let height = options.len() as i32 + header_height;
 
-    // create an off-screen console that represents the menu's window
     let mut window = Offscreen::new(width, height);
 
-    // print the header, with auto-wrap
     window.set_default_foreground(WHITE);
     window.print_rect_ex(
         0,
@@ -999,7 +1065,7 @@ fn menu<T: AsRef<str>>(header: &str, options: &[T], width: i32, root: &mut Root)
 
 fn inventory_menu(inventory: &[Object], header: &str, root: &mut Root) -> Option<usize> {
     // how a menu with each item of the inventory as an option
-    let options = if inventory.len() == 0 {
+    let options = if inventory.is_empty() {
         vec!["Inventory is empty.".into()]
     } else {
         inventory.iter().map(|item| item.name.clone()).collect()
@@ -1008,36 +1074,40 @@ fn inventory_menu(inventory: &[Object], header: &str, root: &mut Root) -> Option
     let inventory_index = menu(header, &options, INVENTORY_WIDTH, root);
 
     // if an item was chosen, return it
-    if inventory.len() > 0 {
+    if !inventory.is_empty() {
         inventory_index
     } else {
         None
     }
 }
 
-
+/// Determines if a player is moving or attacking based on game state
 fn player_move_or_attack(dx: i32, dy: i32, game: &mut Game, objects: &mut [Object]) {
-    // the corrdinates the palyer is moving to/attacking
+    // The coords to where the player is moving to
     let x = objects[PLAYER].x + dx;
     let y = objects[PLAYER].y + dy;
 
-    // try to find an attackable object there
+    // Determine if there is a Fighter Object at the coords by iterating through Objects and
+    // checking their position
     let target_id = objects
         .iter()
         .position(|object| object.fighter.is_some() && object.pos() == (x, y));
 
-    // attack if target is found, move otherwise
+    // If a Fighter Object was found, then attack this Fighter
     match target_id {
         Some(target_id) => {
             let (player, target) = mut_two(PLAYER, target_id, objects);
             player.attack(target, game);
         }
+        // If no Fighter found then move to this tile
         None => {
             move_by(PLAYER, dx, dy, &game.map, objects);
         }
     }
 }
 
+/// Spawns monsters throughout the dungeon
+///
 fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
     let num_monsters = rand::thread_rng().gen_range(0, MAX_ROOM_MONSTERS + 1);
 
@@ -1047,29 +1117,41 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
 
         if !is_blocked(x, y, map, objects) {
             let mut monster = if rand::random::<f32>() < 0.8 {
-                // create orc
-                let mut orc = Object::new(x, y, 'o', "orc", DESATURATED_RED, true);
-                orc.fighter = Some(Fighter {
-                    max_hp: 10,
-                    hp: 10,
-                    defense: 0,
+                // Create a goblin
+                let mut goblin = Object::new(x, y, 'G', "goblin", DESATURATED_GREEN, true);
+                goblin.fighter = Some(Fighter {
+                    max_hp: 9,
+                    hp: 9,
+                    defense: 2,
                     power: 3,
                     on_death: DeathCallback::Monster,
                 });
-                orc.ai = Some(Ai::Basic);
-                orc
-            } else {
-                // create troll
-                let mut troll = Object::new(x, y, 'T', "troll", DARKER_RED, true);
-                troll.fighter = Some(Fighter {
-                    max_hp: 16,
-                    hp: 16,
+                goblin.ai = Some(Ai::Basic);
+                goblin
+            } else if rand::random::<f32>() < 0.5 {
+                // Create a drudge
+                let mut drudge = Object::new(x, y, 'D', "drudge", DARKER_RED, true);
+                drudge.fighter = Some(Fighter {
+                    max_hp: 3,
+                    hp: 3,
                     defense: 1,
-                    power: 4,
+                    power: 2,
                     on_death: DeathCallback::Monster,
                 });
-                troll.ai = Some(Ai::Basic);
-                troll
+                drudge.ai = Some(Ai::Basic);
+                drudge
+            } else {
+                // Create a white rabbit
+                let mut white_rabbit = Object::new(x, y, 'W', "white rabbit", WHITE, true);
+                white_rabbit.fighter = Some(Fighter {
+                    max_hp: 50,
+                    hp: 50,
+                    defense: 2,
+                    power: 5,
+                    on_death: DeathCallback::Monster,
+                });
+                white_rabbit.ai = Some(Ai::Basic);
+                white_rabbit
             };
             monster.alive = true;
             objects.push(monster);
@@ -1081,7 +1163,7 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
     for _ in 0..num_items {
         let mut x: i32 = 0;
         let mut y: i32 = 0;
-        // choose a random spot for this items
+        // Find a random spot for this items
         let mut again: bool = true;
         while again {
             x = rand::thread_rng().gen_range(room.x1 + 1, room.x2);
@@ -1090,22 +1172,22 @@ fn place_objects(room: Room, map: &Map, objects: &mut Vec<Object>) {
                 again = false;
             }
         }
+
+        // Randomly place item pick-ups
         let dice = rand::random::<f32>();
-        let item = if dice < 0.7 {
-            // healing potion
+        let item = if dice < 0.6 {
+            // A Healing Potion
             let mut object = Object::new(x, y, '!', "healing potion", VIOLET, false);
             object.item = Some(Item::Heal);
             object
         } else {
-            // a fire ring spell
+            // A Fire Ring Scroll
             let mut object = Object::new(x, y, '#', "Fire ring spell", LIGHT_YELLOW, false);
             object.item = Some(Item::FireRing);
             object
         };
         objects.push(item);
     }
-
-
 }
 
 fn render_bar(
@@ -1119,19 +1201,19 @@ fn render_bar(
     bar_color: Color,
     back_color: Color,
 ) {
-    // calculate width of bar
+    // Compute bar width
     let bar_width = (value as f32 / maximum as f32 * total_width as f32) as i32;
 
-    // render the background first
+    // Set the background
     panel.set_default_background(back_color);
     panel.rect(x, y, total_width, 1, false, BackgroundFlag::Screen);
 
-    // render the top of the bar
     panel.set_default_background(bar_color);
     if bar_width > 0 {
         panel.rect(x, y, bar_width, 1, false, BackgroundFlag::Screen);
     }
 
+    // Set the foreground and print the text on top
     panel.set_default_foreground(WHITE);
     panel.print_ex(
         x + total_width / 2,
@@ -1142,39 +1224,48 @@ fn render_bar(
     );
 }
 
+/// Allows the Fighter Object to take a turn which is either an attack or a movement
+///
 fn ai_take_turn(monster_id: usize, tcod: &Tcod, game: &mut Game, objects: &mut [Object]) {
     let (monster_x, monster_y) = objects[monster_id].pos();
     if tcod.fov.is_in_fov(monster_x, monster_y) {
         if objects[monster_id].distance_to(&objects[PLAYER]) >= 2.0 {
-            // move toward player if far away
+            // Object Fighter moves towards the PLAYER
             let (player_x, player_y) = objects[PLAYER].pos();
             move_towards(monster_id, player_x, player_y, &game.map, objects);
         } else if objects[PLAYER].fighter.map_or(false, |f| f.hp > 0) {
-            // close enough to attack
+            // Object Fighter attacks the PLAYER
             let (monster, player) = mut_two(monster_id, PLAYER, objects);
             monster.attack(player, game);
         }
     }
+    // Checks if the Tile the Fighter is currently standing on is on fire and if so deals damage to
+    // that Figher
     let tile_state = game.map[monster_x as usize][monster_y as usize].on_fire;
     if tile_state.0 {
-        let mut fire_damage = match tile_state.1 {
+        let fire_damage = match tile_state.1 {
             1..=5 => 1,
             _ => 2,
         };
         objects[monster_id].take_damage(fire_damage, game);
         game.messages.add(
-            format!("Your smoldering fire ring singed the {} for {} HP",
-                    objects[monster_id].name, fire_damage
+            format!(
+                "Your smoldering fire ring singed the {} for {} HP",
+                objects[monster_id].name, fire_damage
             ),
             LIGHT_BLUE,
         );
+        // Tile cools down to normal after dealing damage to a monster
         game.map[monster_x as usize][monster_y as usize].on_fire.0 = false;
     }
 }
 
+/// Main game loop for testing
+///
 fn main() {
     tcod::system::set_fps(LIMIT_FPS);
 
+    // Root setup
     let root = Root::initializer()
         .font("arial10x10.png", FontLayout::Tcod)
         .font_type(FontType::Greyscale)
@@ -1182,6 +1273,7 @@ fn main() {
         .title("Rust/libtcod tutorial")
         .init();
 
+    // Tcod struct setup
     let mut tcod = Tcod {
         root,
         con: Offscreen::new(MAP_WIDTH, MAP_HEIGHT),
@@ -1189,28 +1281,28 @@ fn main() {
         fov: FovMap::new(MAP_WIDTH, MAP_HEIGHT),
     };
 
-    // create object representing the player
+    // Create the PLAYER
     let mut player = Object::new(0, 0, '@', "player", WHITE, true);
     player.alive = true;
     player.fighter = Some(Fighter {
-        max_hp: 30,
-        hp: 30,
+        max_hp: 40,
+        hp: 40,
         defense: 2,
         power: 5,
         on_death: DeathCallback::Player,
     });
 
-    // the list of objects with those two
+    // Vector for all game objects
     let mut objects = vec![player];
 
+    // Game struct with map, messages, inventory
     let mut game = Game {
-        // generate map (at this point it's not drawn to the screen)
         map: make_map(&mut objects),
         messages: Messages::new(),
         inventory: vec![],
     };
 
-    // populate the FOV map, according to the generated map
+    // Initial map setup
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
             tcod.fov.set(
@@ -1222,28 +1314,30 @@ fn main() {
         }
     }
 
+    // Initialize PLAYER's previous position for later use
     let mut previous_player_position = (-1, -1);
+
+    // Welcome message
     game.messages.add("Welcome to Roguelike!", BLUE);
 
-    // game loop
+    // Game loop
     while !tcod.root.window_closed() {
-        // clear the screen of the previous frame
+        // Clear previous frame
         tcod.con.clear();
 
-        // render the screen
+        // Render the current game state
         let fov_recompute = previous_player_position != (objects[PLAYER].pos());
         render_all(&mut tcod, &mut game, &objects, fov_recompute);
-
         tcod.root.flush();
 
-        // get the current position of the player before a potential move in fn 'handle_keys'
+        // Handle PLAYER keys for movement and attacking
         previous_player_position = objects[PLAYER].pos();
         let player_action = handle_keys(&mut tcod, &mut game, &mut objects);
         if player_action == PlayerAction::Exit {
             break;
         }
 
-        // let monsters take their turn
+        // Monster turn
         if objects[PLAYER].alive && player_action != PlayerAction::DidntTakeTurn {
             for id in 0..objects.len() {
                 if objects[id].ai.is_some() {
@@ -1251,12 +1345,13 @@ fn main() {
                 }
             }
         }
-        // ensures player is still a '@' after transforming corpse to a '_' object
-        if objects[PLAYER].alive == true {
+
+        // Ensures that the PLAYER is a '@' if still alive
+        if objects[PLAYER].alive {
             objects[PLAYER].char = '@';
         }
 
-        // Check to see if the player is on a teleport tile and teleports them if they are
+        // Check if PLAYER has moved to a teleporting Tile on game map
         check_teleport(&mut game.map, &mut objects[PLAYER]);
     }
 }
